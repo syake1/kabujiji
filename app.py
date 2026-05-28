@@ -316,8 +316,15 @@ with col_b:
         df = pd.concat(dfs, ignore_index=True).drop_duplicates()
         st.caption(f"📂 {len(files)}ファイル合計 {len(df)}銘柄を読み込みました")
 
+        # SBIのCSV形式に対応（複数パターン）
+        # コード列: 「コード」含む → なければ「銘柄」完全一致
         c_col = [c for c in df.columns if 'コード' in c]
+        if not c_col:
+            c_col = [c for c in df.columns if c.strip() == '銘柄']
+        # 銘柄名列: 「銘柄名」含む → なければ「銘柄.1」
         n_col = [c for c in df.columns if '銘柄名' in c]
+        if not n_col:
+            n_col = [c for c in df.columns if c.strip() == '銘柄.1']
 
         if not c_col or not n_col:
             st.error(f"⚠️ CSVに「コード」「銘柄名」列が見つかりません。検出された列: {list(df.columns)}")
