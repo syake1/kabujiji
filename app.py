@@ -427,11 +427,13 @@ if st.session_state.analysis_results is not None:
         # ========== インラインチャート ==========
         st.markdown("---")
         st.subheader("📊 買い候補チャート（ローソク足）")
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
-        from matplotlib.patches import FancyArrowPatch
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            HAS_MPL = True
+        except ImportError:
+            HAS_MPL = False
 
         def plot_stock_chart(code, name, stop_price, target_price):
             try:
@@ -518,10 +520,29 @@ if st.session_state.analysis_results is not None:
                 col_left, col_right = st.columns([4, 1])
                 with col_left:
                     with st.spinner(f"{code} チャート読み込み中..."):
-                        fig = plot_stock_chart(code, name, float(stop_p), float(tgt_p))
+                        if HAS_MPL:
+                            fig = plot_stock_chart(code, name, float(stop_p), float(tgt_p))
+                        else:
+                            fig = None
                     if fig:
                         st.pyplot(fig, use_container_width=True)
                         plt.close(fig)
+                    elif not HAS_MPL:
+                        # matplotlibなし → Streamlit標準チャートで代替
+                        try:
+                            tk2  = yf.Ticker(f"{code}.T")
+                            h2   = tk2.history(period="6mo").reset_index()
+                            if len(h2) > 0:
+                                h2['MA25'] = h2['Close'].rolling(25).mean()
+                                h2['MA75'] = h2['Close'].rolling(75).mean()
+                                h2 = h2.set_index('Date')
+                                st.line_chart(h2[['Close','MA25','MA75']],
+                                              use_container_width=True)
+                                st.caption("※ matplotlib未インストールのため簡易表示")
+                            else:
+                                st.warning("データ取得できませんでした")
+                        except Exception as e:
+                            st.warning(f"チャート表示失敗: {e}")
                     else:
                         st.warning("チャートデータを取得できませんでした")
                 with col_right:
