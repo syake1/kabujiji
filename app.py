@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -424,6 +423,100 @@ if st.session_state.analysis_results is not None:
         st.subheader("📈 バックテスト結果（買い候補）")
         bt_cols = ['コード', '会社名', 'BT勝率', 'BT平均損益', 'BT取引数', 'BT最大DD', 'RRレシオ', '根拠']
         st.dataframe(buy_only[[c for c in bt_cols if c in buy_only.columns]], use_container_width=True)
+
+        # ========== インラインチャート ==========
+        st.markdown("---")
+        st.subheader("📊 買い候補チャート（ローソク足）")
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        def plot_stock_chart(code, name, stop_price, target_price):
+            try:
+                tk   = yf.Ticker(f"{code}.T")
+                hist = tk.history(period="6mo")
+                if len(hist) < 30:
+                    return None
+                hist = hist.reset_index()
+                hist['MA25']  = hist['Close'].rolling(25).mean()
+                hist['MA75']  = hist['Close'].rolling(75).mean()
+                hist['VolMA5'] = hist['Volume'].rolling(5).mean()
+
+                fig = make_subplots(
+                    rows=2, cols=1,
+                    shared_xaxes=True,
+                    row_heights=[0.7, 0.3],
+                    vertical_spacing=0.05
+                )
+
+                # ローソク足
+                fig.add_trace(go.Candlestick(
+                    x=hist['Date'],
+                    open=hist['Open'], high=hist['High'],
+                    low=hist['Low'],   close=hist['Close'],
+                    name="株価",
+                    increasing_line_color='#FF4B4B',
+                    decreasing_line_color='#1F77B4',
+                ), row=1, col=1)
+
+                # 移動平均線
+                fig.add_trace(go.Scatter(x=hist['Date'], y=hist['MA25'],
+                    line=dict(color='orange', width=1.2), name="MA25"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=hist['Date'], y=hist['MA75'],
+                    line=dict(color='purple', width=1.2), name="MA75"), row=1, col=1)
+
+                # 損切り・利確ライン
+                fig.add_hline(y=stop_price,   line_dash="dash", line_color="red",
+                              annotation_text=f"損切 {stop_price}", row=1, col=1)
+                fig.add_hline(y=target_price, line_dash="dash", line_color="green",
+                              annotation_text=f"利確 {target_price}", row=1, col=1)
+
+                # 出来高
+                colors = ['#FF4B4B' if c >= o else '#1F77B4'
+                          for c, o in zip(hist['Close'], hist['Open'])]
+                fig.add_trace(go.Bar(
+                    x=hist['Date'], y=hist['Volume'],
+                    marker_color=colors, name="出来高", opacity=0.7
+                ), row=2, col=1)
+                fig.add_trace(go.Scatter(x=hist['Date'], y=hist['VolMA5'],
+                    line=dict(color='yellow', width=1), name="出来高MA5"), row=2, col=1)
+
+                fig.update_layout(
+                    title=f"{code} {name}",
+                    xaxis_rangeslider_visible=False,
+                    template="plotly_dark",
+                    height=500,
+                    margin=dict(l=40, r=40, t=50, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                fig.update_yaxes(title_text="株価(円)", row=1, col=1)
+                fig.update_yaxes(title_text="出来高",   row=2, col=1)
+                return fig
+            except Exception as e:
+                return None
+
+        chart_codes = buy_only[['コード', '会社名', '損切り価格', '利確価格']].values.tolist()
+        cols_per_row = 1
+        for i, (code, name, stop_p, tgt_p) in enumerate(chart_codes):
+            with st.expander(f"📈 {code} {name}　損切:{stop_p}円 / 利確:{tgt_p}円", expanded=(i == 0)):
+                col_left, col_right = st.columns([4, 1])
+                with col_left:
+                    with st.spinner(f"{code} チャート読み込み中..."):
+                        fig = plot_stock_chart(code, name, float(stop_p), float(tgt_p))
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning("チャートデータを取得できませんでした")
+                with col_right:
+                    st.markdown(f"**{name}**")
+                    st.markdown(f"🔴 損切: **{stop_p}円**")
+                    st.markdown(f"🟢 利確: **{tgt_p}円**")
+                    row = buy_only[buy_only['コード'] == code].iloc[0]
+                    st.markdown(f"📊 スコア: **{row['スコア']}**")
+                    st.markdown(f"RSI: {row['RSI(14)']}")
+                    st.markdown(f"MACD: {row['MACD']}")
+                    st.markdown(f"出来高倍率: {row['出来高倍率']}")
+                    st.markdown(f"BT勝率: {row['BT勝率']}")
+                    st.link_button("🔗 TradingViewで開く", row['チャート'])
 
         if discord_webhook:
             msg = "【🔥買いサイン点灯】\n" + "\n".join(
