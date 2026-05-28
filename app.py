@@ -427,8 +427,11 @@ if st.session_state.analysis_results is not None:
         # ========== インラインチャート ==========
         st.markdown("---")
         st.subheader("📊 買い候補チャート（ローソク足）")
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.patches import FancyArrowPatch
 
         def plot_stock_chart(code, name, stop_price, target_price):
             try:
@@ -437,65 +440,79 @@ if st.session_state.analysis_results is not None:
                 if len(hist) < 30:
                     return None
                 hist = hist.reset_index()
-                hist['MA25']  = hist['Close'].rolling(25).mean()
-                hist['MA75']  = hist['Close'].rolling(75).mean()
+                hist['MA25']   = hist['Close'].rolling(25).mean()
+                hist['MA75']   = hist['Close'].rolling(75).mean()
                 hist['VolMA5'] = hist['Volume'].rolling(5).mean()
 
-                fig = make_subplots(
-                    rows=2, cols=1,
-                    shared_xaxes=True,
-                    row_heights=[0.7, 0.3],
-                    vertical_spacing=0.05
+                fig, (ax1, ax2) = plt.subplots(
+                    2, 1, figsize=(12, 7),
+                    gridspec_kw={'height_ratios': [3, 1]},
+                    sharex=True
                 )
+                fig.patch.set_facecolor('#0E1117')
+                ax1.set_facecolor('#0E1117')
+                ax2.set_facecolor('#0E1117')
 
                 # ローソク足
-                fig.add_trace(go.Candlestick(
-                    x=hist['Date'],
-                    open=hist['Open'], high=hist['High'],
-                    low=hist['Low'],   close=hist['Close'],
-                    name="株価",
-                    increasing_line_color='#FF4B4B',
-                    decreasing_line_color='#1F77B4',
-                ), row=1, col=1)
+                for i, row in hist.iterrows():
+                    color = '#FF4B4B' if row['Close'] >= row['Open'] else '#1F77B4'
+                    ax1.plot([i, i], [row['Low'], row['High']], color=color, linewidth=0.8)
+                    ax1.bar(i, abs(row['Close'] - row['Open']),
+                            bottom=min(row['Open'], row['Close']),
+                            color=color, width=0.6, alpha=0.9)
 
-                # 移動平均線
-                fig.add_trace(go.Scatter(x=hist['Date'], y=hist['MA25'],
-                    line=dict(color='orange', width=1.2), name="MA25"), row=1, col=1)
-                fig.add_trace(go.Scatter(x=hist['Date'], y=hist['MA75'],
-                    line=dict(color='purple', width=1.2), name="MA75"), row=1, col=1)
+                # 移動平均
+                ax1.plot(range(len(hist)), hist['MA25'],  color='orange', linewidth=1.2, label='MA25')
+                ax1.plot(range(len(hist)), hist['MA75'],  color='#CC00FF', linewidth=1.2, label='MA75')
 
                 # 損切り・利確ライン
-                fig.add_hline(y=stop_price,   line_dash="dash", line_color="red",
-                              annotation_text=f"損切 {stop_price}", row=1, col=1)
-                fig.add_hline(y=target_price, line_dash="dash", line_color="green",
-                              annotation_text=f"利確 {target_price}", row=1, col=1)
+                ax1.axhline(y=stop_price,   color='red',   linestyle='--', linewidth=1.2,
+                            label=f'損切 {stop_price}円')
+                ax1.axhline(y=target_price, color='#00FF7F', linestyle='--', linewidth=1.2,
+                            label=f'利確 {target_price}円')
+
+                # ラベル
+                ax1.text(len(hist)-1, stop_price,   f' 損切 {stop_price}',
+                         color='red',    fontsize=8, va='center')
+                ax1.text(len(hist)-1, target_price, f' 利確 {target_price}',
+                         color='#00FF7F', fontsize=8, va='center')
+
+                ax1.set_title(f'{code}  {name}', color='white', fontsize=13, pad=8)
+                ax1.tick_params(colors='#AAAAAA')
+                ax1.yaxis.label.set_color('#AAAAAA')
+                ax1.set_ylabel('株価 (円)', color='#AAAAAA')
+                for spine in ax1.spines.values():
+                    spine.set_edgecolor('#333333')
+                ax1.legend(loc='upper left', fontsize=8,
+                           facecolor='#1E1E1E', labelcolor='white', framealpha=0.7)
+                ax1.grid(axis='y', color='#222222', linewidth=0.5)
 
                 # 出来高
-                colors = ['#FF4B4B' if c >= o else '#1F77B4'
-                          for c, o in zip(hist['Close'], hist['Open'])]
-                fig.add_trace(go.Bar(
-                    x=hist['Date'], y=hist['Volume'],
-                    marker_color=colors, name="出来高", opacity=0.7
-                ), row=2, col=1)
-                fig.add_trace(go.Scatter(x=hist['Date'], y=hist['VolMA5'],
-                    line=dict(color='yellow', width=1), name="出来高MA5"), row=2, col=1)
+                vol_colors = ['#FF4B4B' if c >= o else '#1F77B4'
+                              for c, o in zip(hist['Close'], hist['Open'])]
+                ax2.bar(range(len(hist)), hist['Volume'], color=vol_colors, alpha=0.7, width=0.6)
+                ax2.plot(range(len(hist)), hist['VolMA5'], color='yellow', linewidth=1, label='Vol MA5')
+                ax2.set_ylabel('出来高', color='#AAAAAA')
+                ax2.tick_params(colors='#AAAAAA')
+                for spine in ax2.spines.values():
+                    spine.set_edgecolor('#333333')
+                ax2.grid(axis='y', color='#222222', linewidth=0.5)
 
-                fig.update_layout(
-                    title=f"{code} {name}",
-                    xaxis_rangeslider_visible=False,
-                    template="plotly_dark",
-                    height=500,
-                    margin=dict(l=40, r=40, t=50, b=20),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                # X軸ラベル（月/日）
+                tick_step = max(1, len(hist) // 8)
+                ticks = list(range(0, len(hist), tick_step))
+                ax2.set_xticks(ticks)
+                ax2.set_xticklabels(
+                    [str(hist['Date'].iloc[t])[:10] for t in ticks],
+                    rotation=30, ha='right', color='#AAAAAA', fontsize=7
                 )
-                fig.update_yaxes(title_text="株価(円)", row=1, col=1)
-                fig.update_yaxes(title_text="出来高",   row=2, col=1)
+
+                plt.tight_layout(h_pad=0.5)
                 return fig
             except Exception as e:
                 return None
 
         chart_codes = buy_only[['コード', '会社名', '損切り価格', '利確価格']].values.tolist()
-        cols_per_row = 1
         for i, (code, name, stop_p, tgt_p) in enumerate(chart_codes):
             with st.expander(f"📈 {code} {name}　損切:{stop_p}円 / 利確:{tgt_p}円", expanded=(i == 0)):
                 col_left, col_right = st.columns([4, 1])
@@ -503,20 +520,21 @@ if st.session_state.analysis_results is not None:
                     with st.spinner(f"{code} チャート読み込み中..."):
                         fig = plot_stock_chart(code, name, float(stop_p), float(tgt_p))
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.pyplot(fig, use_container_width=True)
+                        plt.close(fig)
                     else:
                         st.warning("チャートデータを取得できませんでした")
                 with col_right:
                     st.markdown(f"**{name}**")
                     st.markdown(f"🔴 損切: **{stop_p}円**")
                     st.markdown(f"🟢 利確: **{tgt_p}円**")
-                    row = buy_only[buy_only['コード'] == code].iloc[0]
-                    st.markdown(f"📊 スコア: **{row['スコア']}**")
-                    st.markdown(f"RSI: {row['RSI(14)']}")
-                    st.markdown(f"MACD: {row['MACD']}")
-                    st.markdown(f"出来高倍率: {row['出来高倍率']}")
-                    st.markdown(f"BT勝率: {row['BT勝率']}")
-                    st.link_button("🔗 TradingViewで開く", row['チャート'])
+                    row_data = buy_only[buy_only['コード'] == code].iloc[0]
+                    st.markdown(f"📊 スコア: **{row_data['スコア']}**")
+                    st.markdown(f"RSI: {row_data['RSI(14)']}")
+                    st.markdown(f"MACD: {row_data['MACD']}")
+                    st.markdown(f"出来高倍率: {row_data['出来高倍率']}")
+                    st.markdown(f"BT勝率: {row_data['BT勝率']}")
+                    st.link_button("🔗 TradingViewで開く", row_data['チャート'])
 
         if discord_webhook:
             msg = "【🔥買いサイン点灯】\n" + "\n".join(
