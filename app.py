@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -135,9 +136,22 @@ def backtest(hist, stop_pct, target_pct, rsi_min, rsi_max, ma200_range, vol_mult
 # ================================================================
 def analyze_stock(ticker_code, company_name,
                   stop_pct, target_pct, rsi_min, rsi_max, ma200_range, vol_mult):
+    import time
+    last_err = ""
     try:
-        tk   = yf.Ticker(f"{ticker_code}.T")
-        hist = tk.history(period="2y")
+        # リトライ付きデータ取得（最大3回）
+        hist = pd.DataFrame()
+        for attempt in range(3):
+            try:
+                tk   = yf.Ticker(f"{ticker_code}.T")
+                hist = tk.history(period="2y", timeout=10)
+                if len(hist) > 0:
+                    break
+            except Exception as e:
+                last_err = str(e)
+                time.sleep(1)
+        if len(hist) < 200:
+            return {"_error": f"{ticker_code}: データ取得失敗 データ数={len(hist)} {last_err[:50]}"}
         if len(hist) < 210:
             return None
 
@@ -332,24 +346,42 @@ with col_b:
             t_list = df[[c_col[0], n_col[0]]].dropna()
             if st.button(f"🚀 {len(t_list)}銘柄を一括解析（バックテスト込み）"):
                 results    = []
+                errors     = []
                 bar        = st.progress(0)
                 status_txt = st.empty()
+                err_txt    = st.empty()
                 for i, (idx, row) in enumerate(t_list.iterrows()):
                     code = str(row[c_col[0]])
                     name = str(row[n_col[0]])
-                    status_txt.text(f"解析中... {code} {name} ({i+1}/{len(t_list)})")
+                    status_txt.text(f"解析中... {code} {name} ({i+1}/{len(t_list)}) ✅{len(results)}件 ❌{len(errors)}件")
                     res = analyze_stock(code, name, stop_pct, target_pct,
                                         rsi_min, rsi_max, ma200_range, vol_mult)
-                    if res:
+                    if res and '_error' in res:
+                        errors.append(res['_error'])
+                        if len(errors) <= 3:
+                            err_txt.warning(f"⚠️ 直近エラー: {res['_error']}")
+                    elif res:
                         results.append(res)
                     bar.progress((i + 1) / len(t_list))
-                status_txt.text("✅ 完了！")
+                status_txt.text(f"✅ 完了！ 成功:{len(results)}件 / 失敗:{len(errors)}件")
 
-                # ✅ 修正: 結果が空の場合のハンドリング
+                if errors:
+                    with st.expander(f"❌ 取得失敗 {len(errors)}件（クリックで詳細）"):
+                        for e in errors[:20]:
+                            st.text(e)
+                        if len(errors) > 20:
+                            st.text(f"... 他 {len(errors)-20}件")
+
                 if results:
-                    st.session_state.analysis_results = pd.DataFrame(results)
+                    good = [r for r in results if '判定' in r]
+                    st.session_state.analysis_results = pd.DataFrame(good) if good else None
+                    if not good:
+                        st.warning("⚠️ データ取得はできましたが判定列がありません。")
                 else:
-                    st.warning("⚠️ 解析できた銘柄が0件でした。CSVのコード列を確認するか、時間をおいて再試行してください。")
+                    if errors:
+                        st.error(f"⚠️ 全{len(errors)}銘柄の取得に失敗しました。\n主な原因: Yahoo Financeへの接続制限\n→ 少し時間をおいて再実行してください。")
+                    else:
+                        st.warning("⚠️ 解析できた銘柄が0件でした（データ不足）。")
                     st.session_state.analysis_results = None
 
 # ================================================================
