@@ -337,13 +337,24 @@ with col_b:
                         results.append(res)
                     bar.progress((i + 1) / len(t_list))
                 status_txt.text("✅ 完了！")
-                st.session_state.analysis_results = pd.DataFrame(results)
+
+                # ✅ 修正: 結果が空の場合のハンドリング
+                if results:
+                    st.session_state.analysis_results = pd.DataFrame(results)
+                else:
+                    st.warning("⚠️ 解析できた銘柄が0件でした。CSVのコード列を確認するか、時間をおいて再試行してください。")
+                    st.session_state.analysis_results = None
 
 # ================================================================
 # 結果表示
 # ================================================================
 if st.session_state.analysis_results is not None:
     res_df = st.session_state.analysis_results
+
+    # ✅ 修正: 空DataFrameや'判定'列なしに対するガード
+    if res_df.empty or '判定' not in res_df.columns:
+        st.warning("⚠️ 表示できる解析結果がありません。再度スキャンしてください。")
+        st.stop()
 
     st.markdown("---")
 
