@@ -291,6 +291,25 @@ def analyze_stock(ticker_code, company_name,
         bb_range = bb_upper_val - bb_lo_val
         bb_pos   = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
+        # BB下限タッチ判定（直近5日以内にBB下限に触れたか）
+        # 「BB下限にいる」ではなく「BB下限から反発中」を検出
+        bb_touched_lower  = False
+        bb_touch_days_ago = 0
+        for _bi in range(1, 6):
+            if len(hist) > _bi:
+                _row   = hist.iloc[-_bi]
+                _bb_lo = float(_row['BB_lower'])
+                _low   = float(_row['Low'])
+                _close = float(_row['Close'])
+                # 安値 or 終値がBB下限の102%以内ならタッチとみなす
+                if _low <= _bb_lo * 1.02 or _close <= _bb_lo * 1.02:
+                    bb_touched_lower  = True
+                    bb_touch_days_ago = _bi
+                    break
+
+        # BB下限タッチ後にセンター方向へ戻り始めているか
+        bb_rebounding = bb_touched_lower and bb_pos >= 20
+
         # 25日線の傾き
         ma25_slope = check_ma25_slope(hist)
 
@@ -352,11 +371,21 @@ def analyze_stock(ticker_code, company_name,
         else:
             warnings.append("25日線下向き")
 
-        # 3. BBセンター以下（+1点）/ BB下限付近（+2点）
-        if bb_pos <= 25:
+        # 3. BB判定（タッチ後反発 or 下限付近 or センター以下）
+        if bb_rebounding and bb_touch_days_ago <= 3:
+            # 直近1〜3日以内にBB下限タッチ → 今まさに反発中（最高評価）
+            score += 3
+            reasons.append(f"BB下限タッチ後反発({bb_touch_days_ago}日前タッチ/現在{bb_pos:.0f}%)")
+        elif bb_rebounding and bb_touch_days_ago <= 5:
+            # 4〜5日前にタッチして戻り始め（高評価）
+            score += 2
+            reasons.append(f"BB下限反発中({bb_touch_days_ago}日前タッチ/現在{bb_pos:.0f}%)")
+        elif bb_pos <= 25:
+            # 今もBB下限付近にいる（標準評価）
             score += 2
             reasons.append(f"BB下限付近({bb_pos:.0f}%)")
         elif bb_pos <= 50:
+            # BBセンター以下（最低評価）
             score += 1
             reasons.append(f"BBセンター以下({bb_pos:.0f}%)")
         else:
@@ -473,7 +502,7 @@ def analyze_stock(ticker_code, company_name,
             "25日乖離":      f"{diff_pct_25:+.2f}%",
             "RSI(14)":       round(rsi, 1),
             "MACD":          macd_label,
-            "BB位置":        f"{bb_pos:.0f}%",
+            "BB位置":        f"{bb_pos:.0f}%" + (f"(↑{bb_touch_days_ago}日前下限タッチ)" if bb_touched_lower else ""),
             "出来高倍率":    f"{vol_ratio:.1f}x",
             "陰線日数":      bearish_count,
             "反発サイン":    " / ".join(reversal_signs) if reversal_signs else "-",
