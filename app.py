@@ -443,10 +443,15 @@ def analyze_stock(ticker_code, company_name,
         # 判定
         # ================================================================
         # 必須条件チェック
-        must_ok = (current_price > ma200) and ma25_slope
+        # ★BB下限タッチを必須条件に追加（タッチなし = 買い候補にしない）
+        must_ok     = (current_price > ma200) and ma25_slope
+        bb_must_ok  = bb_touched_lower  # BB下限タッチが必須
 
         if not must_ok:
             status = "⛔ 除外（弱い銘柄）"
+        elif not bb_must_ok:
+            # BB下限タッチなし → 押し目未形成として監視どまり
+            status = "👀 監視（BB下限未タッチ）"
         elif score >= 8:
             status = "🔥 買い候補"
         elif score >= 6:
@@ -874,10 +879,27 @@ if st.session_state.analysis_results is not None:
     else:
         st.info("現在、押し目買い条件を満たす銘柄はありません。サイドバーの条件を調整してみてください。")
 
-    # 監視銘柄
+    # 監視銘柄（押し目形成中）
     st.markdown("---")
     st.subheader("👀 監視銘柄（押し目形成中）")
     watch = res_df[res_df['判定'] == "👀 監視（押し目形成中）"].sort_values('スコア', ascending=False)
+    if not watch.empty:
+        st.caption("BB下限タッチ済み・もう一押しで買い候補入り")
+        st.dataframe(watch, use_container_width=True,
+                     column_config={"チャート": st.column_config.LinkColumn("チャート")})
+    else:
+        st.write("監視銘柄はありません。")
+
+    # BB下限未タッチ銘柄（押し目待ち）
+    st.markdown("---")
+    st.subheader("⏳ BB下限未タッチ（押し目待ち）")
+    st.caption("強い銘柄だがBB下限にまだ届いていない — 下がってきたら狙える候補")
+    bb_not_touched = res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"].sort_values('スコア', ascending=False)
+    if not bb_not_touched.empty:
+        st.dataframe(bb_not_touched, use_container_width=True,
+                     column_config={"チャート": st.column_config.LinkColumn("チャート")})
+    else:
+        st.write("該当銘柄はありません。")
     if not watch.empty:
         st.dataframe(watch, use_container_width=True,
                      column_config={"チャート": st.column_config.LinkColumn("チャート")})
@@ -887,12 +909,13 @@ if st.session_state.analysis_results is not None:
     # 統計
     st.markdown("---")
     st.subheader("📊 スキャン統計")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("解析銘柄数",           len(res_df))
-    c2.metric("🔥 買い候補",          len(res_df[res_df['判定'] == "🔥 買い候補"]))
-    c3.metric("👀 監視",              len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
-    c4.metric("⏳ 様子見",            len(res_df[res_df['判定'] == "⏳ 様子見"]))
-    c5.metric("⛔ 除外（弱い銘柄）",  len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("解析銘柄数",              len(res_df))
+    c2.metric("🔥 買い候補",             len(res_df[res_df['判定'] == "🔥 買い候補"]))
+    c3.metric("👀 押し目形成中",          len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
+    c4.metric("⏳ BB下限未タッチ",        len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
+    c5.metric("⏳ 様子見",               len(res_df[res_df['判定'] == "⏳ 様子見"]))
+    c6.metric("⛔ 除外",                 len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
 
     # 全銘柄
     st.markdown("---")
