@@ -434,37 +434,39 @@ def analyze_stock(ticker_code, company_name,
             reasons.append("MACD収束中")
 
         # --- 除外ペナルティ ---
-        # 高値ブレイク直後（BB上部 & 出来高急増）
-        if bb_pos > 80 and not vol_calm:
+        # ★BB80%超 = 押し目未形成として問答無用で除外
+        if bb_pos > 80:
             score = max(score - 3, 0)
-            warnings.append("高値圏過熱⛔")
+            warnings.append(f"BB上部({bb_pos:.0f}%) 押し目未形成⛔")
 
-        # ★BB下限タッチ後に急騰してBB上限を突き抜けた（乗り遅れ）
-        if bb_touched_lower and bb_pos > 100:
-            score = max(score - 4, 0)
+        # ★BB下限タッチ後に急騰してBB上限突破（乗り遅れ）
+        if bb_touched_lower and bb_pos > 80:
+            score = max(score - 2, 0)
             warnings.append(f"BB下限タッチ後に急騰⛔ 乗り遅れ(BB{bb_pos:.0f}%)")
 
-        # ★RSIが上限を超えている（過熱）→ bb_must_okを取り消し
+        # ★RSIが上限を超えている（過熱）
         if rsi > rsi_max:
             warnings.append(f"RSI過熱({rsi:.0f}) 押し目未形成⛔")
 
         # ================================================================
         # 判定
         # ================================================================
-        must_ok    = (current_price > ma200) and ma25_slope
-        # BB下限タッチ必須 かつ タッチ後急騰していない かつ RSI過熱でない
+        must_ok = (current_price > ma200) and ma25_slope
+
+        # BB下限タッチ必須 かつ BB80%以下 かつ RSI過熱でない
         bb_must_ok = (bb_touched_lower
-                      and bb_pos <= 100        # BB上限突破していない
-                      and rsi <= rsi_max)      # RSI過熱でない
+                      and bb_pos <= 80       # ★BB80%超は除外
+                      and rsi <= rsi_max)    # RSI過熱でない
 
         if not must_ok:
             status = "⛔ 除外（弱い銘柄）"
-        elif bb_touched_lower and bb_pos > 100:
-            status = "⛔ 除外（急騰乗り遅れ）"
-        elif not bb_must_ok and not bb_touched_lower:
+        elif bb_pos > 80:
+            # BB上部にいる → 押し目未形成・過熱・乗り遅れ
+            status = "⛔ 除外（BB上部/過熱）"
+        elif not bb_touched_lower:
             status = "👀 監視（BB下限未タッチ）"
         elif not bb_must_ok:
-            # タッチ済みだがRSI過熱 → 過熱冷め待ち
+            # タッチ済みだがRSI過熱
             status = "⏳ 様子見（RSI過熱冷め待ち）"
         elif score >= 8:
             status = "🔥 買い候補"
@@ -927,9 +929,9 @@ if st.session_state.analysis_results is not None:
     c1.metric("解析銘柄数",           len(res_df))
     c2.metric("🔥 買い候補",          len(res_df[res_df['判定'] == "🔥 買い候補"]))
     c3.metric("👀 押し目形成中",       len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
-    c4.metric("⏳ BB下限未タッチ",     len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
+    c4.metric("👀 BB下限未タッチ",     len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
     c5.metric("⏳ RSI過熱冷め待ち",    len(res_df[res_df['判定'] == "⏳ 様子見（RSI過熱冷め待ち）"]))
-    c6.metric("⛔ 急騰乗り遅れ",       len(res_df[res_df['判定'] == "⛔ 除外（急騰乗り遅れ）"]))
+    c6.metric("⛔ BB上部/過熱",        len(res_df[res_df['判定'] == "⛔ 除外（BB上部/過熱）"]))
     c7.metric("⛔ 除外（弱い銘柄）",   len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
 
     # 全銘柄
