@@ -371,21 +371,25 @@ def analyze_stock(ticker_code, company_name,
         else:
             warnings.append("25日線下向き")
 
-        # 3. BB判定（タッチ後反発 or 下限付近 or センター以下）
-        if bb_rebounding and bb_touch_days_ago <= 3:
-            # 直近1〜3日以内にBB下限タッチ → 今まさに反発中（最高評価）
-            score += 3
-            reasons.append(f"BB下限タッチ後反発({bb_touch_days_ago}日前タッチ/現在{bb_pos:.0f}%)")
-        elif bb_rebounding and bb_touch_days_ago <= 5:
-            # 4〜5日前にタッチして戻り始め（高評価）
-            score += 2
-            reasons.append(f"BB下限反発中({bb_touch_days_ago}日前タッチ/現在{bb_pos:.0f}%)")
+        # 3. BB判定（タッチ翌日・翌々日のみ買い候補対象）
+        if bb_touched_lower and bb_pos <= 80:
+            if bb_touch_days_ago <= 2:
+                # ★翌日・翌々日 = 最高評価（一番おいしいタイミング）
+                score += 3
+                reasons.append(f"BB下限タッチ翌{bb_touch_days_ago}日目({bb_pos:.0f}%)")
+            elif bb_touch_days_ago == 3:
+                # 3日後 = 反発中だが少し遅め
+                score += 2
+                reasons.append(f"BB下限タッチ{bb_touch_days_ago}日後({bb_pos:.0f}%)")
+            elif bb_touch_days_ago <= 5:
+                # 4〜5日後 = 乗り遅れ気味
+                score += 1
+                reasons.append(f"BB下限タッチ{bb_touch_days_ago}日後({bb_pos:.0f}%) 乗り遅れ気味")
         elif bb_pos <= 25:
-            # 今もBB下限付近にいる（標準評価）
+            # BB下限に今いる（タッチ中）
             score += 2
             reasons.append(f"BB下限付近({bb_pos:.0f}%)")
         elif bb_pos <= 50:
-            # BBセンター以下（最低評価）
             score += 1
             reasons.append(f"BBセンター以下({bb_pos:.0f}%)")
         else:
@@ -453,20 +457,22 @@ def analyze_stock(ticker_code, company_name,
         # ================================================================
         must_ok = (current_price > ma200) and ma25_slope
 
-        # BB下限タッチ必須 かつ BB80%以下 かつ RSI過熱でない
+        # BB下限タッチ必須 かつ BB80%以下 かつ RSI過熱でない かつ タッチ2日以内
         bb_must_ok = (bb_touched_lower
-                      and bb_pos <= 80       # ★BB80%超は除外
-                      and rsi <= rsi_max)    # RSI過熱でない
+                      and bb_pos <= 80
+                      and rsi <= rsi_max
+                      and bb_touch_days_ago <= 3)  # 3日以内のみ買い候補対象
 
         if not must_ok:
             status = "⛔ 除外（弱い銘柄）"
         elif bb_pos > 80:
-            # BB上部にいる → 押し目未形成・過熱・乗り遅れ
             status = "⛔ 除外（BB上部/過熱）"
         elif not bb_touched_lower:
             status = "👀 監視（BB下限未タッチ）"
-        elif not bb_must_ok:
-            # タッチ済みだがRSI過熱
+        elif bb_touch_days_ago > 3 and bb_pos > 50:
+            # タッチから4日以上経過 かつ BB中央超え = 乗り遅れ
+            status = "⏳ 様子見（反発乗り遅れ）"
+        elif rsi > rsi_max:
             status = "⏳ 様子見（RSI過熱冷め待ち）"
         elif score >= 8:
             status = "🔥 買い候補"
@@ -925,14 +931,13 @@ if st.session_state.analysis_results is not None:
     # 統計
     st.markdown("---")
     st.subheader("📊 スキャン統計")
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("解析銘柄数",           len(res_df))
-    c2.metric("🔥 買い候補",          len(res_df[res_df['判定'] == "🔥 買い候補"]))
-    c3.metric("👀 押し目形成中",       len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
-    c4.metric("👀 BB下限未タッチ",     len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
-    c5.metric("⏳ RSI過熱冷め待ち",    len(res_df[res_df['判定'] == "⏳ 様子見（RSI過熱冷め待ち）"]))
-    c6.metric("⛔ BB上部/過熱",        len(res_df[res_df['判定'] == "⛔ 除外（BB上部/過熱）"]))
-    c7.metric("⛔ 除外（弱い銘柄）",   len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("解析銘柄数",         len(res_df))
+    c2.metric("🔥 買い候補",        len(res_df[res_df['判定'] == "🔥 買い候補"]))
+    c3.metric("👀 押し目形成中",     len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
+    c4.metric("👀 BB下限未タッチ",   len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
+    c5.metric("⛔ BB上部/過熱",      len(res_df[res_df['判定'] == "⛔ 除外（BB上部/過熱）"]))
+    c6.metric("⛔ 除外（弱い銘柄）", len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
 
     # 全銘柄
     st.markdown("---")
