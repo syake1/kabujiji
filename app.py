@@ -424,17 +424,33 @@ def analyze_stock(ticker_code, company_name,
             score += 1
             reasons.append(f"25日線付近({diff_pct_25:+.1f}%)")
 
-        # 8. 反発サイン（+1点）
-        if reversal_signs:
-            score += 1
-            reasons.append(" ".join(reversal_signs))
+        # 8. 反発サイン（ランク別スコア）
+        reversal_score = 0
+        if "下ヒゲ陽線" in reversal_signs:
+            reversal_score = 3   # 最強
+        elif "包み足" in reversal_signs:
+            reversal_score = 2   # 強い
+        elif "陽線転換" in reversal_signs:
+            reversal_score = 1   # 普通
+        elif "長い下ヒゲ" in reversal_signs:
+            reversal_score = 1   # 予兆
 
-        # 9. MACDがGC接近（ボーナス +1点、最大10点にクリップ）
+        if reversal_score > 0:
+            score += reversal_score
+            sign_label = reversal_signs[0] if reversal_signs else ""
+            if reversal_score == 3:
+                reasons.append(f"🔥 {sign_label}（最強反発）")
+            elif reversal_score == 2:
+                reasons.append(f"⚡ {sign_label}（強い反発）")
+            else:
+                reasons.append(f"↑ {sign_label}（反発予兆）")
+
+        # 9. MACDがGC接近（ボーナス +1点、最大13点にクリップ）
         if macd_gc_recent:
-            score = min(score + 1, 10)
+            score = min(score + 1, 13)
             reasons.append("MACD-GC直近")
         elif macd_narrowing and macd_val < sig_val:
-            score = min(score + 1, 10)
+            score = min(score + 1, 13)
             reasons.append("MACD収束中")
 
         # --- 除外ペナルティ ---
@@ -457,11 +473,14 @@ def analyze_stock(ticker_code, company_name,
         # ================================================================
         must_ok = (current_price > ma200) and ma25_slope
 
-        # BB下限タッチ必須 かつ BB80%以下 かつ RSI過熱でない かつ タッチ2日以内
+        # BB下限タッチ必須 かつ BB80%以下 かつ RSI過熱でない かつ タッチ3日以内
+        # ★反発サインも必須条件に追加
+        has_reversal  = len(reversal_signs) > 0
         bb_must_ok = (bb_touched_lower
                       and bb_pos <= 80
                       and rsi <= rsi_max
-                      and bb_touch_days_ago <= 3)  # 3日以内のみ買い候補対象
+                      and bb_touch_days_ago <= 3
+                      and has_reversal)        # ★反発サイン必須
 
         if not must_ok:
             status = "⛔ 除外（弱い銘柄）"
@@ -469,8 +488,10 @@ def analyze_stock(ticker_code, company_name,
             status = "⛔ 除外（BB上部/過熱）"
         elif not bb_touched_lower:
             status = "👀 監視（BB下限未タッチ）"
+        elif bb_touched_lower and not has_reversal:
+            # BB下限タッチ済みだが反発サインがまだ出ていない
+            status = "⏳ 様子見（反発サイン待ち）"
         elif bb_touch_days_ago > 3 and bb_pos > 50:
-            # タッチから4日以上経過 かつ BB中央超え = 乗り遅れ
             status = "⏳ 様子見（反発乗り遅れ）"
         elif rsi > rsi_max:
             status = "⏳ 様子見（RSI過熱冷め待ち）"
@@ -732,7 +753,7 @@ if st.session_state.analysis_results is not None:
                 "チャート":    st.column_config.LinkColumn("チャート"),
                 "損切り価格":  st.column_config.NumberColumn("損切り💀", format="%.1f"),
                 "利確目標":    st.column_config.NumberColumn("利確🎯",   format="%.1f"),
-                "スコア":      st.column_config.ProgressColumn("スコア", min_value=0, max_value=10),
+                "スコア":      st.column_config.ProgressColumn("スコア", min_value=0, max_value=13),
                 "200日乖離":   st.column_config.NumberColumn("200日乖離%", format="%.2f"),
                 "25日乖離":    st.column_config.NumberColumn("25日乖離%",  format="%.2f"),
                 "BT勝率":      st.column_config.NumberColumn("BT勝率%",   format="%.1f"),
@@ -912,6 +933,17 @@ if st.session_state.analysis_results is not None:
     else:
         st.write("監視銘柄はありません。")
 
+    # BB下限タッチ済み・反発サイン待ち（明日以降狙える候補）
+    st.markdown("---")
+    st.subheader("⏳ BB下限タッチ済み・反発サイン待ち")
+    st.caption("BB下限にタッチ済み — 下ヒゲ陽線・包み足・陽線転換が出たら即買い候補")
+    sign_wait = res_df[res_df['判定'] == "⏳ 様子見（反発サイン待ち）"].sort_values('スコア', ascending=False)
+    if not sign_wait.empty:
+        st.dataframe(sign_wait, use_container_width=True,
+                     column_config={"チャート": st.column_config.LinkColumn("チャート")})
+    else:
+        st.write("該当銘柄はありません。")
+
     # BB下限未タッチ銘柄（押し目待ち）
     st.markdown("---")
     st.subheader("⏳ BB下限未タッチ（押し目待ち）")
@@ -931,13 +963,14 @@ if st.session_state.analysis_results is not None:
     # 統計
     st.markdown("---")
     st.subheader("📊 スキャン統計")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("解析銘柄数",         len(res_df))
-    c2.metric("🔥 買い候補",        len(res_df[res_df['判定'] == "🔥 買い候補"]))
-    c3.metric("👀 押し目形成中",     len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
-    c4.metric("👀 BB下限未タッチ",   len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
-    c5.metric("⛔ BB上部/過熱",      len(res_df[res_df['判定'] == "⛔ 除外（BB上部/過熱）"]))
-    c6.metric("⛔ 除外（弱い銘柄）", len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("解析銘柄数",           len(res_df))
+    c2.metric("🔥 買い候補",          len(res_df[res_df['判定'] == "🔥 買い候補"]))
+    c3.metric("👀 押し目形成中",       len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
+    c4.metric("⏳ 反発サイン待ち",     len(res_df[res_df['判定'] == "⏳ 様子見（反発サイン待ち）"]))
+    c5.metric("👀 BB下限未タッチ",     len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
+    c6.metric("⛔ BB上部/過熱",        len(res_df[res_df['判定'] == "⛔ 除外（BB上部/過熱）"]))
+    c7.metric("⛔ 除外（弱い銘柄）",   len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
 
     # 全銘柄
     st.markdown("---")
