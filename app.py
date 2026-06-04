@@ -12,62 +12,78 @@ st.set_page_config(page_title="アンチグラビティ・コア Pro+ 押し目�
 if 'analysis_results' not in st.session_state:
     st.session_state.analysis_results = None
 
-# --- サイドバー ---
-with st.sidebar:
-    st.header("⚙️ システム設定")
-    gemini_key      = st.text_input("Gemini API Key", type="password")
-    discord_webhook = st.text_input("Discord Webhook URL", type="password")
+# ================================================================
+# タイトル
+# ================================================================
+st.title("🚀 アンチグラビティ・コア Pro+")
+st.caption("押し目反発特化版 ｜ 強い銘柄の怖い押し目を拾い、平均回帰を狙う")
+
+# ================================================================
+# システム設定（上部・横並び・折りたたみ）
+# ================================================================
+with st.expander("⚙️ システム設定 / スイング条件設定", expanded=False):
+    # --- API設定 ---
+    row0 = st.columns([2, 2, 1])
+    with row0[0]:
+        gemini_key = st.text_input("Gemini API Key", type="password")
+    with row0[1]:
+        discord_webhook = st.text_input("Discord Webhook URL", type="password")
+    with row0[2]:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄 リセット", use_container_width=True):
+            st.session_state.analysis_results = None
+            st.rerun()
 
     st.markdown("---")
-    st.subheader("🎯 スイング条件設定（押し目反発）")
-    rsi_max     = st.slider("RSI 上限（過熱排除）",       50, 70,  55)
-    rsi_min     = st.slider("RSI 下限（下落排除）",       25, 45,  35)
-    ma200_range = st.slider("200日線乖離 上限 (%)",        1, 30,  20)
-    vol_mult    = st.slider("出来高急増 除外倍率（5日比）", 1.5, 5.0, 2.5, step=0.1)
-    stop_pct    = st.slider("損切りライン (%)",            1, 10,   4)
-    target_pct  = st.slider("利確ライン (%)",              2, 20,   8)
+
+    # --- スイング条件（横並び6列）---
+    st.markdown("**🎯 スイング条件設定（押し目反発）**")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        rsi_max = st.slider("RSI上限（過熱排除）", 50, 70, 55)
+    with c2:
+        rsi_min = st.slider("RSI下限（下落排除）", 25, 45, 35)
+    with c3:
+        ma200_range = st.slider("200日線乖離上限(%)", 1, 30, 20)
+    with c4:
+        vol_mult = st.slider("出来高急増除外倍率", 1.5, 5.0, 2.5, step=0.1)
+    with c5:
+        stop_pct = st.slider("損切りライン(%)", 1, 10, 4)
+    with c6:
+        target_pct = st.slider("利確ライン(%)", 2, 20, 8)
 
     st.markdown("---")
-    st.subheader("💡 押し目条件（戦略説明）")
-    st.info(f"""
-**【強い銘柄の怖い押し目を拾う】**
 
-1. 株価 > **200日線**（上昇トレンド確認）
-2. **25日線が上向き**（中期トレンド維持）
-3. BB **センター以下**（理想は下限付近）
-4. RSI **{rsi_min}〜{rsi_max}**（売られすぎ圏）
-5. 直近**陰線続き**（怖い押し目）
-6. 出来高**落ち着き**（急増は除外）
-7. **25日線付近**まで調整済み
-8. 下ヒゲ・陽線転換などの**反発サイン**
+    # --- 戦略説明 + チェックリスト（横並び）---
+    col_s, col_c = st.columns(2)
+    with col_s:
+        st.info(f"""
+**【押し目条件】**
+1. 株価 > **200日線** ／ **25日線上向き**
+2. BB **下限タッチ後** 反発サインあり
+3. RSI **{rsi_min}〜{rsi_max}**（売られすぎ圏）
+4. 出来高 **落ち着き**（急増は除外）
+5. 下ヒゲ陽線🔥 / 包み足⚡ / 陽線転換↑
 
-🎯 利確: BB センター付近（+{target_pct}%）
-💀 損切: -{stop_pct}%
-    """)
-    st.markdown("---")
-    st.subheader("⏰ 寄り天反発チェックリスト")
-    st.warning("""
-**10時半〜11時の反発狙い**
+🎯 利確: BBセンター（+{target_pct}%）　💀 損切: -{stop_pct}%
+        """)
+    with col_c:
+        st.warning("""
+**【⏰ 10時半〜11時 反発チェック】**
 
-✅ 確認してからエントリー：
-- [ ] 9〜10時で出来高が急減している
-- [ ] 前場安値を2〜3回試して割らない
-- [ ] 日経先物が底打ち・戻し始め
-- [ ] その銘柄だけ下げ渋っている
-- [ ] 小陽線 or 下ヒゲが出た
+✅ エントリー前に確認：
+- 9〜10時に出来高が急減している
+- 前場安値を2〜3回試して割らない
+- 日経先物が底打ち・戻し始め
+- 小陽線 or 下ヒゲが出た
 
 ❌ 見送り条件：
-- 個別の悪材料（決算ミス等）がある
+- 個別の悪材料がある
 - 出来高が増え続けている
 - 節目サポートを割り込んだまま
-- 日経先物も戻らない
 
 💡 **損切りは前場安値割れ**
-    """)
-    st.markdown("---")
-    if st.button("🔄 全データをリセット"):
-        st.session_state.analysis_results = None
-        st.rerun()
+        """)
 
 # ================================================================
 # 指標計算
@@ -574,9 +590,7 @@ def analyze_stock(ticker_code, company_name,
 # ================================================================
 # メイン画面
 # ================================================================
-st.title("🚀 アンチグラビティ・コア Pro+")
-st.caption("押し目反発特化版 ｜ 強い銘柄の怖い押し目を拾い、平均回帰を狙う")
-
+st.markdown("---")
 col_a, col_b = st.columns(2)
 
 # AI ニュース分析
@@ -585,7 +599,7 @@ with col_a:
     news_input = st.text_area("ニュースをペースト", height=150)
     if st.button("AI分析を実行"):
         if not gemini_key:
-            st.warning("⚠️ サイドバーに Gemini API Key を入力してください")
+            st.warning("⚠️ 上の設定欄に Gemini API Key を入力してください")
         elif not news_input:
             st.warning("⚠️ ニュースを貼り付けてください")
         else:
