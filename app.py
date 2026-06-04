@@ -9,8 +9,41 @@ from datetime import datetime
 # --- 初期設定 ---
 st.set_page_config(page_title="アンチグラビティ・コア Pro+ 押し目特化", layout="wide")
 
+import json, os
+
+SAVE_PATH = 'data/scan_result_full.json'
+
+def save_results(df):
+    """スキャン結果をJSONに保存"""
+    os.makedirs('data', exist_ok=True)
+    data = {
+        'saved_at': datetime.now().strftime('%Y/%m/%d %H:%M'),
+        'records': df.to_dict(orient='records')
+    }
+    with open(SAVE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_results():
+    """JSONからスキャン結果を読み込み"""
+    if not os.path.exists(SAVE_PATH):
+        return None, None
+    try:
+        with open(SAVE_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        df = pd.DataFrame(data['records'])
+        return df, data.get('saved_at', '')
+    except:
+        return None, None
+
+# 起動時にJSONから自動読み込み
 if 'analysis_results' not in st.session_state:
-    st.session_state.analysis_results = None
+    df_loaded, saved_at = load_results()
+    if df_loaded is not None and not df_loaded.empty:
+        st.session_state.analysis_results = df_loaded
+        st.session_state.saved_at = saved_at
+    else:
+        st.session_state.analysis_results = None
+        st.session_state.saved_at = ''
 
 # ================================================================
 # タイトル
@@ -32,6 +65,9 @@ with st.expander("⚙️ システム設定 / スイング条件設定", expande
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 リセット", use_container_width=True):
             st.session_state.analysis_results = None
+            st.session_state.saved_at = ''
+            if os.path.exists(SAVE_PATH):
+                os.remove(SAVE_PATH)
             st.rerun()
 
     st.markdown("---")
@@ -690,21 +726,27 @@ with col_b:
 
                 if results:
                     good = [r for r in results if '判定' in r]
-                    st.session_state.analysis_results = pd.DataFrame(good) if good else None
-                    # ---- スマホ用にJSONへ自動保存 ----
-                    import json, os
-                    buy_list = [r for r in good if r.get('判定') == '🔥 買い候補']
-                    watch_list = [r for r in good if r.get('判定') == '👀 監視（押し目形成中）']
-                    save_data = {
-                        'updated': datetime.now().strftime('%Y/%m/%d %H:%M'),
-                        'buy':   buy_list,
-                        'watch': watch_list,
-                        'total': len(good),
-                    }
-                    os.makedirs('data', exist_ok=True)
-                    with open('data/scan_result.json', 'w', encoding='utf-8') as f:
-                        json.dump(save_data, f, ensure_ascii=False, indent=2)
-                    st.success("📱 スマホ用データを自動保存しました")
+                    df_good = pd.DataFrame(good) if good else None
+                    st.session_state.analysis_results = df_good
+
+                    if df_good is not None:
+                        # ---- フルデータをJSONに保存（次回起動時に自動読み込み）----
+                        save_results(df_good)
+                        st.session_state.saved_at = datetime.now().strftime('%Y/%m/%d %H:%M')
+
+                        # ---- スマホ用にも保存 ----
+                        buy_list   = [r for r in good if r.get('判定') == '🔥 買い候補']
+                        watch_list = [r for r in good if r.get('判定') == '👀 監視（押し目形成中）']
+                        mobile_data = {
+                            'updated': st.session_state.saved_at,
+                            'buy':   buy_list,
+                            'watch': watch_list,
+                            'total': len(good),
+                        }
+                        os.makedirs('data', exist_ok=True)
+                        with open('data/scan_result.json', 'w', encoding='utf-8') as f:
+                            json.dump(mobile_data, f, ensure_ascii=False, indent=2)
+                        st.success(f"✅ {len(good)}銘柄を保存しました（次回起動時も表示されます）")
                 else:
                     if errors:
                         st.error("⚠️ 全銘柄の取得に失敗しました。時間をおいて再実行してください。")
@@ -722,6 +764,11 @@ if st.session_state.analysis_results is not None:
         st.warning("⚠️ 表示できる解析結果がありません。再度スキャンしてください。")
         st.stop()
 
+    # 保存日時を表示
+    saved_at = st.session_state.get('saved_at', '')
+    if saved_at:
+        st.info(f"📂 表示中のデータ: {saved_at} スキャン結果（次回起動時も自動表示されます）")
+
     st.markdown("---")
 
     # ======== 買い候補 ========
@@ -738,9 +785,8 @@ if st.session_state.analysis_results is not None:
         buy_only['_win'] = buy_only['BT勝率'].apply(parse_pct)
         buy_only = buy_only.sort_values(['_win', 'スコア'], ascending=False).drop(columns=['_win'])
 
-        # --- %表示を数値に修正（ProgressColumnが%文字列を誤表示するため） ---
+        # --- %表示を数値に修正 ---
         def pct_to_float(col):
-            """'12.3%' → 12.3 に変換"""
             return col.apply(lambda x: float(str(x).replace('%','').replace('+','')) if x != '-' else 0.0)
 
         buy_display = buy_only.copy()
@@ -748,15 +794,35 @@ if st.session_state.analysis_results is not None:
             if c in buy_display.columns:
                 buy_display[c] = pct_to_float(buy_display[c])
 
-        # 表示列の並び順
+        # 根拠を短縮（長い場合は先頭30文字＋…）
+        def shorten(x, n=30):
+            s = str(x)
+            return s[:n] + '…' if len(s) > n else s
+
+        # 反発サイン＋陰線日数を根拠に統合して列削減
+        if '反発サイン' in buy_display.columns and '陰線日数' in buy_display.columns:
+            buy_display['根拠'] = buy_display.apply(
+                lambda r: (
+                    (f"{'🔥' if '下ヒゲ陽線' in str(r['反発サイン']) else '⚡' if '包み足' in str(r['反発サイン']) else '↑'}"
+                     f"{r['反発サイン']} " if str(r['反発サイン']) not in ['-',''] else '') +
+                    (f"陰{r['陰線日数']}日 " if str(r['陰線日数']) not in ['-','0',''] else '') +
+                    str(r.get('根拠',''))
+                )[:40], axis=1
+            )
+
+        # チャートURLを📊アイコンリンクに変換
+        if 'チャート' in buy_display.columns:
+            buy_display['📊'] = buy_display['チャート']
+
+        # 表示列（コンパクト・1行で見える順）
         display_cols = [
             "コード", "会社名", "スコア",
             "現在値", "200日乖離", "25日乖離",
             "RSI(14)", "MACD", "BB位置",
-            "陰線日数", "出来高倍率", "反発サイン",
-            "損切り価格", "利確目標", "RRレシオ",
-            "根拠", "注意点", "チャート",
-            "BT勝率", "BT平均損益", "BT取引数", "BT最大DD"
+            "出来高倍率", "損切り価格", "利確目標",
+            "RRレシオ", "根拠", "注意点",
+            "BT勝率", "BT平均損益", "BT最大DD",
+            "📊"
         ]
         disp = [c for c in display_cols if c in buy_display.columns]
 
@@ -764,18 +830,23 @@ if st.session_state.analysis_results is not None:
             buy_display[disp],
             use_container_width=True,
             column_config={
-                "チャート":    st.column_config.LinkColumn("チャート"),
-                "損切り価格":  st.column_config.NumberColumn("損切り💀", format="%.1f"),
-                "利確目標":    st.column_config.NumberColumn("利確🎯",   format="%.1f"),
+                "📊":          st.column_config.LinkColumn("📊", display_text="📊"),
+                "損切り価格":  st.column_config.NumberColumn("損切💀", format="%.0f"),
+                "利確目標":    st.column_config.NumberColumn("利確🎯", format="%.0f"),
                 "スコア":      st.column_config.ProgressColumn("スコア", min_value=0, max_value=13),
-                "200日乖離":   st.column_config.NumberColumn("200日乖離%", format="%.2f"),
-                "25日乖離":    st.column_config.NumberColumn("25日乖離%",  format="%.2f"),
-                "BT勝率":      st.column_config.NumberColumn("BT勝率%",   format="%.1f"),
-                "BT平均損益":  st.column_config.NumberColumn("BT平均損益%", format="%.2f"),
-                "BT最大DD":    st.column_config.NumberColumn("BT最大DD%",  format="%.2f"),
-                "陰線日数":    st.column_config.NumberColumn("陰線日数📉"),
-                "反発サイン":  st.column_config.TextColumn("反発サイン✨"),
-            }
+                "200日乖離":   st.column_config.NumberColumn("200日%", format="%.1f"),
+                "25日乖離":    st.column_config.NumberColumn("25日%",  format="%.1f"),
+                "BT勝率":      st.column_config.NumberColumn("BT勝率", format="%.0f"),
+                "BT平均損益":  st.column_config.NumberColumn("BT損益", format="%.1f"),
+                "BT最大DD":    st.column_config.NumberColumn("最大DD", format="%.1f"),
+                "出来高倍率":  st.column_config.TextColumn("出来高"),
+                "根拠":        st.column_config.TextColumn("根拠", width="medium"),
+                "注意点":      st.column_config.TextColumn("注意", width="small"),
+                "RRレシオ":    st.column_config.TextColumn("RR"),
+                "MACD":        st.column_config.TextColumn("MACD"),
+                "BB位置":      st.column_config.TextColumn("BB位置"),
+            },
+            height=400,
         )
 
         # ========== CSVダウンロード ==========
