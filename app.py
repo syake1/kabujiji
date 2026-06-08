@@ -688,7 +688,11 @@ with col_b:
         c_col = [c for c in df.columns if 'コード' in c]
         if not c_col:
             c_col = [c for c in df.columns if c.strip() == '銘柄']
+
+        # ★修正箇所：「銘柄名」→「会社名」→「銘柄.1」の順でフォールバック
         n_col = [c for c in df.columns if '銘柄名' in c]
+        if not n_col:
+            n_col = [c for c in df.columns if '会社名' in c]
         if not n_col:
             n_col = [c for c in df.columns if c.strip() == '銘柄.1']
 
