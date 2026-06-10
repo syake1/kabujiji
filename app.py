@@ -537,7 +537,16 @@ def analyze_short(ticker_code, company_name,
                   credit_ratio, credit_sell_change,
                   credit_sell_buy_ratio,
                   stop_pct=4, target_pct=8,
-                  rsi_short_min=60, rsi_short_max=80):
+                  rsi_short_min=40, rsi_short_max=60):
+    """
+    空売りロジック（下落トレンド継続銘柄の戻り売り）
+    - 200日線を大幅に下回っている（下落トレンド確認）
+    - 25日線が下向き
+    - RSI 40〜60（戻り一服ゾーン）でエントリー
+    - 信用倍率が高い（買い残過多 → 整理売り圧力）
+    - 売り残前週比プラス（売り圧力増加中）
+    - BB条件なし（大きく下落した銘柄はBB上限に届かない）
+    """
     import time
     try:
         hist = pd.DataFrame()
@@ -554,6 +563,7 @@ def analyze_short(ticker_code, company_name,
 
         hist['MA200']    = hist['Close'].rolling(200).mean()
         hist['MA25']     = hist['Close'].rolling(25).mean()
+        hist['MA75']     = hist['Close'].rolling(75).mean()
         bb_up, bb_mid, bb_lo = calculate_bb(hist)
         hist['BB_upper'] = bb_up
         hist['BB_mid']   = bb_mid
@@ -571,6 +581,7 @@ def analyze_short(ticker_code, company_name,
         current_price = float(latest['Close'])
         ma200         = float(latest['MA200'])
         ma25          = float(latest['MA25'])
+        ma75          = float(latest['MA75']) if not pd.isna(latest['MA75']) else ma200
         rsi           = float(latest['RSI'])
         macd_val      = float(latest['MACD'])
         sig_val       = float(latest['Signal'])
@@ -582,30 +593,27 @@ def analyze_short(ticker_code, company_name,
         if pd.isna(ma200) or pd.isna(ma25):
             return None
 
+        diff_pct_200 = (current_price - ma200) / ma200 * 100
+        diff_pct_25  = (current_price - ma25)  / ma25  * 100
+
         bb_range = bb_upper_val - bb_lo_val
         bb_pos   = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
-        # BB上限タッチ判定（直近5日以内）
-        bb_touched_upper  = False
-        bb_touch_days_ago = 0
-        for _bi in range(1, 6):
-            if len(hist) > _bi:
-                _row   = hist.iloc[-_bi]
-                _bb_up = float(_row['BB_upper'])
-                if float(_row['High']) >= _bb_up * 0.98 or float(_row['Close']) >= _bb_up * 0.98:
-                    bb_touched_upper  = True
-                    bb_touch_days_ago = _bi
-                    break
-
-        # 200日線・25日線の傾き
+        # 200日線・25日線・75日線の傾き（下向き判定）
         ma200_5ago       = float(hist['MA200'].dropna().iloc[-6]) if len(hist['MA200'].dropna()) >= 6 else ma200
         ma200_slope_down = ma200 < ma200_5ago
         ma25_5ago        = float(hist['MA25'].dropna().iloc[-6]) if len(hist['MA25'].dropna()) >= 6 else ma25
         ma25_slope_down  = ma25 < ma25_5ago
 
-        # 陽線続き
+        # 直近の小反発（戻り）を検出 --- エントリータイミング
+        # 直近3〜5日で一時的に上昇してから失速しているか
+        recent_high = max([float(hist.iloc[-_i]['High']) for _i in range(1, 6) if len(hist) > _i])
+        recent_low  = min([float(hist.iloc[-_i]['Low'])  for _i in range(1, 6) if len(hist) > _i])
+        bounce_pct  = (current_price - recent_low) / recent_low * 100 if recent_low > 0 else 0
+
+        # 陽線続き（戻り局面の確認）
         bullish_count = 0
-        for _j in range(1, 5):
+        for _j in range(1, 6):
             if len(hist) > _j:
                 _r = hist.iloc[-_j]
                 if _r['Close'] >= _r['Open']:
@@ -613,22 +621,29 @@ def analyze_short(ticker_code, company_name,
                 else:
                     break
 
-        # 天井サイン
+        # 失速サイン（戻り売りエントリーの根拠）
         top_signs  = []
         body       = abs(latest['Close'] - latest['Open'])
         upper_wick = latest['High'] - max(latest['Close'], latest['Open'])
+        lower_wick = min(latest['Close'], latest['Open']) - latest['Low']
 
+        # 上ヒゲ陰線（戻り失速）
         if latest['Close'] < latest['Open'] and body > 0 and upper_wick >= body * 1.5:
             top_signs.append("上ヒゲ陰線")
+        # 被せ線
         if (prev['Close'] >= prev['Open']
                 and latest['Open'] > prev['Close']
                 and latest['Close'] < prev['Open']):
             top_signs.append("被せ線")
+        # 陰線転換
         elif prev['Close'] >= prev['Open'] and latest['Close'] < latest['Open']:
             if "上ヒゲ陰線" not in top_signs:
                 top_signs.append("陰線転換")
+        # 上ヒゲ（陽線でも上ヒゲが長い）
+        if body > 0 and upper_wick >= body * 2.0 and "上ヒゲ陰線" not in top_signs:
+            top_signs.append("長い上ヒゲ")
 
-        # MACD デッドクロス
+        # MACD デッドクロス・下方向
         macd_diff      = macd_val - sig_val
         macd_diff_prev = float(hist.iloc[-2]['MACD']) - float(hist.iloc[-2]['Signal'])
         macd_dc_recent = False
@@ -639,133 +654,131 @@ def analyze_short(ticker_code, company_name,
                 if float(_p['MACD']) > float(_p['Signal']) and float(_c['MACD']) <= float(_c['Signal']):
                     macd_dc_recent = True
                     break
-        macd_narrowing_down = (macd_diff > macd_diff_prev) and macd_val > sig_val
+        macd_below_sig = macd_val < sig_val
 
         # ================================================================
-        # 空売りスコアリング（最大14点）
+        # 空売りスコアリング（最大15点）
         # ================================================================
         score    = 0
         reasons  = []
         warnings = []
 
-        diff_pct_200 = (current_price - ma200) / ma200 * 100
-        diff_pct_25  = (current_price - ma25)  / ma25  * 100
-
-        # 1. 200日線位置・傾き
-        if current_price < ma200:
-            score += 2
-            reasons.append(f"200日線下({diff_pct_200:+.1f}%)")
-        elif ma200_slope_down:
-            score += 1
-            reasons.append("200日線下向き")
-        else:
-            warnings.append("200日線上昇中⚠️")
-
-        # 2. 25日線下向き
-        if ma25_slope_down:
-            score += 1
-            reasons.append("25日線下向き")
-
-        # 3. BB上限タッチ
-        if bb_touched_upper and bb_pos >= 20:
-            if bb_touch_days_ago <= 2:
-                score += 3
-                reasons.append(f"BB上限タッチ翌{bb_touch_days_ago}日目({bb_pos:.0f}%)")
-            elif bb_touch_days_ago == 3:
-                score += 2
-                reasons.append(f"BB上限タッチ{bb_touch_days_ago}日後({bb_pos:.0f}%)")
-            else:
-                score += 1
-                reasons.append(f"BB上限タッチ{bb_touch_days_ago}日後({bb_pos:.0f}%) 遅め")
-        elif bb_pos >= 75:
-            score += 2
-            reasons.append(f"BB上限付近({bb_pos:.0f}%)")
-        elif bb_pos >= 50:
-            score += 1
-            reasons.append(f"BBセンター以上({bb_pos:.0f}%)")
-        else:
-            warnings.append(f"BB下部({bb_pos:.0f}%)")
-
-        # 4. RSI過熱
-        if rsi_short_min <= rsi <= rsi_short_max:
-            score += 1
-            reasons.append(f"RSI過熱({rsi:.0f})")
-        elif rsi > rsi_short_max:
-            score += 2
-            reasons.append(f"RSI超過熱({rsi:.0f})")
-        else:
-            warnings.append(f"RSI低め({rsi:.0f})")
-
-        # 5. 信用倍率
         def safe_float(val):
             try:
                 return float(str(val).replace(',', ''))
             except:
                 return np.nan
 
+        # --- 必須: 200日線を下回っている（乖離幅でスコア加算）---
+        # 1. 200日線乖離（大きいほど下落トレンドが強い）
+        if diff_pct_200 <= -20:
+            score += 4
+            reasons.append(f"200日線大幅下乖離({diff_pct_200:.1f}%)")
+        elif diff_pct_200 <= -15:
+            score += 3
+            reasons.append(f"200日線下乖離({diff_pct_200:.1f}%)")
+        elif diff_pct_200 <= -10:
+            score += 2
+            reasons.append(f"200日線下({diff_pct_200:.1f}%)")
+        elif diff_pct_200 <= -5:
+            score += 1
+            reasons.append(f"200日線やや下({diff_pct_200:.1f}%)")
+        elif diff_pct_200 > 0:
+            warnings.append(f"200日線上⚠️ (+{diff_pct_200:.1f}%)")
+
+        # 2. 200日線が下向き（+1点）
+        if ma200_slope_down:
+            score += 1
+            reasons.append("200日線下向き継続")
+
+        # 3. 25日線下向き（+1点）
+        if ma25_slope_down:
+            score += 1
+            reasons.append("25日線下向き")
+
+        # 4. MA配列（25日線 < 75日線 < 200日線 → 完全下落配列）
+        if ma25 < ma75 < ma200:
+            score += 2
+            reasons.append("完全下落配列(25<75<200)")
+        elif ma25 < ma200:
+            score += 1
+            reasons.append("25日線<200日線")
+
+        # 5. RSI（戻り一服ゾーン 40〜60 がベスト）
+        if rsi_short_min <= rsi <= rsi_short_max:
+            score += 2
+            reasons.append(f"RSI戻り一服({rsi:.0f})")
+        elif rsi > rsi_short_max:
+            score += 1
+            reasons.append(f"RSI高め({rsi:.0f}) 戻り過ぎ注意")
+            warnings.append(f"RSI過熱({rsi:.0f}) 反発リスク")
+        elif rsi < 30:
+            warnings.append(f"RSI売られすぎ({rsi:.0f}) 一時反発注意")
+        else:
+            score += 1
+            reasons.append(f"RSI({rsi:.0f})")
+
+        # 6. 信用倍率（高いほど買い残過多 → 整理売り圧力 → 空売り有利）
         cr = safe_float(credit_ratio)
         if not np.isnan(cr):
-            if cr <= 1.0:
+            if cr >= 10:
+                score += 3
+                reasons.append(f"信用倍率{cr:.1f}(買い残過多・空売り超有利)")
+            elif cr >= 5:
                 score += 2
-                reasons.append(f"信用倍率{cr:.2f}(売り有利)")
-            elif cr <= 2.0:
+                reasons.append(f"信用倍率{cr:.1f}(買い残多め・空売り有利)")
+            elif cr >= 2:
                 score += 1
-                reasons.append(f"信用倍率{cr:.2f}")
-            else:
-                warnings.append(f"信用倍率{cr:.2f}(高め注意)")
+                reasons.append(f"信用倍率{cr:.1f}")
+            elif cr <= 1.0:
+                warnings.append(f"信用倍率{cr:.2f}(売り残多め・踏み上げ注意⚠️)")
 
-        # 6. 売り残前週比
+        # 7. 売り残前週比プラス（+1点）
         sc_val = safe_float(credit_sell_change)
         if not np.isnan(sc_val):
             if sc_val > 0:
                 score += 1
                 reasons.append(f"売り残増加(+{sc_val:,.0f}株)")
-            elif sc_val < 0:
-                warnings.append(f"売り残減少({sc_val:,.0f}株)")
+            elif sc_val < -10000:
+                warnings.append(f"売り残大幅減少({sc_val:,.0f}株)⚠️")
 
-        # 7. 天井サイン
+        # 8. 失速サイン（戻り売りエントリー根拠）
         top_score = 0
         if "被せ線" in top_signs:
             top_score = 3
         elif "上ヒゲ陰線" in top_signs:
             top_score = 2
-        elif "陰線転換" in top_signs:
+        elif "陰線転換" in top_signs or "長い上ヒゲ" in top_signs:
             top_score = 1
         if top_score > 0:
             score += top_score
             label = top_signs[0]
             if top_score == 3:
-                reasons.append(f"🔻{label}（最強天井）")
+                reasons.append(f"🔻{label}（最強失速）")
             elif top_score == 2:
-                reasons.append(f"⬇️{label}（天井サイン）")
+                reasons.append(f"⬇️{label}（失速サイン）")
             else:
-                reasons.append(f"↓{label}（天井予兆）")
+                reasons.append(f"↓{label}（失速予兆）")
 
-        # 8. MACD DC
+        # 9. MACD
         if macd_dc_recent:
-            score = min(score + 1, 14)
+            score = min(score + 1, 15)
             reasons.append("MACD-DC直近")
-        elif macd_narrowing_down:
-            score = min(score + 1, 14)
-            reasons.append("MACD収束(下)")
+        elif macd_below_sig:
+            score = min(score + 1, 15)
+            reasons.append("MACD下方向")
 
-        # ペナルティ
-        if bb_pos < 20:
-            score = max(score - 3, 0)
-            warnings.append(f"BB下部({bb_pos:.0f}%) 天井未形成⛔")
+        # --- 必須条件チェック ---
+        # 200日線上は除外
+        trend_down = diff_pct_200 < 0  # 200日線を下回っていること
 
-        # 判定
-        has_top_sign = len(top_signs) > 0
-
-        if not bb_touched_upper and bb_pos < 50:
-            status = "⛔ 除外（BB下部）"
-        elif not has_top_sign and bb_pos < 60:
-            status = "👀 監視（天井サイン待ち）"
-        elif score >= 8:
+        if not trend_down:
+            status = "⛔ 除外（200日線上・買いスキャン対象）"
+        elif score >= 9:
             status = "🔻 空売り候補"
-        elif score >= 6:
-            status = "👀 監視（天井形成中）"
-        elif score >= 4:
+        elif score >= 7:
+            status = "👀 監視（下落トレンド継続）"
+        elif score >= 5:
             status = "⏳ 様子見"
         else:
             status = "➖ 対象外"
@@ -777,9 +790,7 @@ def analyze_short(ticker_code, company_name,
 
         if macd_dc_recent:
             macd_label = "🔴 DC直近"
-        elif macd_narrowing_down:
-            macd_label = "🟡 収束(下)"
-        elif macd_val < sig_val:
+        elif macd_below_sig:
             macd_label = "↓下"
         else:
             macd_label = "↑上"
@@ -792,12 +803,13 @@ def analyze_short(ticker_code, company_name,
             "現在値":        round(current_price, 1),
             "200日乖離":     f"{diff_pct_200:+.2f}%",
             "25日乖離":      f"{diff_pct_25:+.2f}%",
+            "MA配列":        f"25:{ma25:.0f} / 75:{ma75:.0f} / 200:{ma200:.0f}",
             "RSI(14)":       round(rsi, 1),
             "MACD":          macd_label,
-            "BB位置":        f"{bb_pos:.0f}%" + (f"(↓{bb_touch_days_ago}日前上限タッチ)" if bb_touched_upper else ""),
+            "BB位置":        f"{bb_pos:.0f}%",
             "出来高倍率":    f"{vol_ratio:.1f}x",
             "陽線日数":      bullish_count,
-            "天井サイン":    " / ".join(top_signs) if top_signs else "-",
+            "失速サイン":    " / ".join(top_signs) if top_signs else "-",
             "信用倍率":      f"{cr:.2f}" if not np.isnan(cr) else "-",
             "売り残前週比":  f"{sc_val:+,.0f}株" if not np.isnan(sc_val) else "-",
             "損切り価格":    stop_price,
