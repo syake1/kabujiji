@@ -1173,26 +1173,34 @@ with tab_short:
 
     col_up1, col_up2 = st.columns(2)
     with col_up1:
-        short_credit_file = st.file_uploader(
-            "📂 ① 信用CSVをアップロード（信用倍率・売り残含む）",
-            type=['csv'], key="short_credit_csv"
+        short_credit_files = st.file_uploader(
+            "📂 ① 信用CSVをアップロード（複数可）（信用倍率・売り残含む）",
+            type=['csv'], accept_multiple_files=True, key="short_credit_csv"
         )
     with col_up2:
         short_tech_files = st.file_uploader(
-            "📂 ② テクニカルCSVをアップロード（銘柄コード・会社名含む）",
+            "📂 ② テクニカルCSVをアップロード（複数可）（銘柄コード・会社名含む）",
             type=['csv'], accept_multiple_files=True, key="short_tech_csv"
         )
 
     st.caption("💡 信用CSVのみでもスキャン可能です（テクニカルCSVは省略できます）")
 
-    # 信用CSVのみでもスキャンできるよう対応
-    if short_credit_file:
-        short_credit_file.seek(0)
-        try:
-            df_credit = pd.read_csv(short_credit_file, encoding='utf-8-sig')
-        except:
-            short_credit_file.seek(0)
-            df_credit = pd.read_csv(short_credit_file, encoding='shift-jis')
+    # CSV読み込み処理
+    df_merged = None
+    if short_credit_files:
+        dfs_credit = []
+        for f in short_credit_files:
+            f.seek(0)
+            try:
+                dfs_credit.append(pd.read_csv(f, encoding='utf-8-sig'))
+            except:
+                f.seek(0)
+                try:
+                    dfs_credit.append(pd.read_csv(f, encoding='shift-jis'))
+                except:
+                    f.seek(0)
+                    dfs_credit.append(pd.read_csv(f, encoding='utf-8'))
+        df_credit = pd.concat(dfs_credit, ignore_index=True).drop_duplicates()
 
         if short_tech_files:
             dfs_tech = []
@@ -1210,7 +1218,7 @@ with tab_short:
             if tech_code_col and tech_name_col:
                 df_tech['_code'] = df_tech[tech_code_col[0]].astype(str).str.strip()
                 df_merged = df_credit.merge(df_tech[['_code', tech_name_col[0]]], on='_code', how='left')
-                df_merged['_name'] = df_merged[tech_name_col[0]].fillna(df_merged.get('銘柄名', ''))
+                df_merged['_name'] = df_merged[tech_name_col[0]].fillna(df_merged.get('銘柄名', df_merged['_code']))
             else:
                 df_merged = df_credit.copy()
                 df_merged['_code'] = df_merged[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
@@ -1221,63 +1229,67 @@ with tab_short:
             df_merged = df_credit.copy()
             df_merged['_name'] = df_merged[name_col[0]] if name_col else df_merged['_code']
 
-        st.caption(f"📊 スキャン対象: {len(df_merged)}銘柄")
+    if df_merged is not None:
+        st.caption(f"📊 スキャン対象: {len(df_merged)}銘柄（{len(short_credit_files)}ファイル）")
+    else:
+        st.caption("📊 信用CSVをアップロードするとスキャン対象銘柄数が表示されます")
 
-        # ← スキャンボタン（修正済み）
-        if st.button(f"🔻 {len(df_merged)}銘柄を空売りスキャン実行", type="primary"):
-            short_results = []
-            short_errors  = []
-            s_bar         = st.progress(0)
-            s_status      = st.empty()
+    # ボタンは常時表示（CSV未アップロード時はグレーアウト）
+    btn_label = f"🔻 {len(df_merged)}銘柄を空売りスキャン実行" if df_merged is not None else "🔻 空売りスキャン実行（先にCSVをアップロード）"
+    if st.button(btn_label, type="primary", disabled=(df_merged is None)):
+        short_results = []
+        short_errors  = []
+        s_bar         = st.progress(0)
+        s_status      = st.empty()
 
-            def safe_float_local(val):
-                try:
-                    return float(str(val).replace(',', ''))
-                except:
-                    return np.nan
-
-            def get_credit_col(row, keywords):
-                for k in keywords:
-                    for c in row.index:
-                        if k in str(c):
-                            v = row[c]
-                            if pd.notna(v):
-                                return safe_float_local(v)
+        def safe_float_local(val):
+            try:
+                return float(str(val).replace(',', ''))
+            except:
                 return np.nan
 
-            for i, (_, row) in enumerate(df_merged.iterrows()):
-                code = str(row['_code'])
-                name = str(row['_name'])
-                cr   = get_credit_col(row, ['信用倍率'])
-                sc   = get_credit_col(row, ['前週比(売)', '前週比（売）'])
-                sblr = get_credit_col(row, ['売買高レシオ'])
+        def get_credit_col(row, keywords):
+            for k in keywords:
+                for c in row.index:
+                    if k in str(c):
+                        v = row[c]
+                        if pd.notna(v):
+                            return safe_float_local(v)
+            return np.nan
 
-                s_status.text(f"空売りスキャン中... {code} {name} ({i+1}/{len(df_merged)}) ✅{len(short_results)}件")
+        for i, (_, row) in enumerate(df_merged.iterrows()):
+            code = str(row['_code'])
+            name = str(row['_name'])
+            cr   = get_credit_col(row, ['信用倍率'])
+            sc   = get_credit_col(row, ['前週比(売)', '前週比（売）'])
+            sblr = get_credit_col(row, ['売買高レシオ'])
 
-                res = analyze_short(
-                    code, name, cr, sc, sblr,
-                    stop_pct=short_stop_pct,
-                    target_pct=short_target_pct,
-                    rsi_short_min=rsi_short_min,
-                    rsi_short_max=rsi_short_max,
-                )
-                if res:
-                    short_results.append(res)
-                else:
-                    short_errors.append(code)
-                s_bar.progress((i + 1) / len(df_merged))
+            s_status.text(f"空売りスキャン中... {code} {name} ({i+1}/{len(df_merged)}) ✅{len(short_results)}件")
 
-            s_status.text(f"✅ 完了！ 成功:{len(short_results)}件 / 失敗:{len(short_errors)}件")
-            st.session_state.short_results = short_results
+            res = analyze_short(
+                code, name, cr, sc, sblr,
+                stop_pct=short_stop_pct,
+                target_pct=short_target_pct,
+                rsi_short_min=rsi_short_min,
+                rsi_short_max=rsi_short_max,
+            )
+            if res:
+                short_results.append(res)
+            else:
+                short_errors.append(code)
+            s_bar.progress((i + 1) / len(df_merged))
 
-            if discord_webhook and short_results:
-                short_df_tmp = pd.DataFrame(short_results)
-                cands = short_df_tmp[short_df_tmp['判定'] == "🔻 空売り候補"]
-                if not cands.empty:
-                    msg = "【🔻空売りサイン点灯】\n" + "\n".join(
-                        [f"・{r['コード']} {r['会社名']} スコア{r['スコア']} 信用倍率{r['信用倍率']} 失速:{r['失速サイン']}"
-                         for _, r in cands.iterrows()])
-                    requests.post(discord_webhook, json={"content": msg})
+        s_status.text(f"✅ 完了！ 成功:{len(short_results)}件 / 失敗:{len(short_errors)}件")
+        st.session_state.short_results = short_results
+
+        if discord_webhook and short_results:
+            short_df_tmp = pd.DataFrame(short_results)
+            cands = short_df_tmp[short_df_tmp['判定'] == "🔻 空売り候補"]
+            if not cands.empty:
+                msg = "【🔻空売りサイン点灯】\n" + "\n".join(
+                    [f"・{r['コード']} {r['会社名']} スコア{r['スコア']} 信用倍率{r['信用倍率']} 失速:{r['失速サイン']}"
+                     for _, r in cands.iterrows()])
+                requests.post(discord_webhook, json={"content": msg})
 
     # ================================================================
     # 空売り結果表示
