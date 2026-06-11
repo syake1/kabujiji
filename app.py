@@ -540,12 +540,12 @@ def analyze_short(ticker_code, company_name,
                   rsi_short_min=40, rsi_short_max=60):
     """
     空売りロジック（下落トレンド継続銘柄の戻り売り）
-    - 200日線を大幅に下回っている（下落トレンド確認）
-    - 25日線が下向き
-    - RSI 40〜60（戻り一服ゾーン）でエントリー
-    - 信用倍率が高い（買い残過多 → 整理売り圧力）
-    - 売り残前週比プラス（売り圧力増加中）
-    - BB条件なし（大きく下落した銘柄はBB上限に届かない）
+    返り値の判定ステータス:
+      "🔻 空売り候補"
+      "👀 監視（下落トレンド継続）"
+      "⏳ 様子見"
+      "➖ 対象外"
+      "⛔ 除外（200日線上・買いスキャン対象）"
     """
     import time
     try:
@@ -599,16 +599,14 @@ def analyze_short(ticker_code, company_name,
         bb_range = bb_upper_val - bb_lo_val
         bb_pos   = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
-        # 200日線・25日線・75日線の傾き（下向き判定）
+        # 200日線・25日線の傾き（下向き判定）
         ma200_5ago       = float(hist['MA200'].dropna().iloc[-6]) if len(hist['MA200'].dropna()) >= 6 else ma200
         ma200_slope_down = ma200 < ma200_5ago
         ma25_5ago        = float(hist['MA25'].dropna().iloc[-6]) if len(hist['MA25'].dropna()) >= 6 else ma25
         ma25_slope_down  = ma25 < ma25_5ago
 
-        # 直近の小反発（戻り）を検出 --- エントリータイミング
-        # 直近3〜5日で一時的に上昇してから失速しているか
-        recent_high = max([float(hist.iloc[-_i]['High']) for _i in range(1, 6) if len(hist) > _i])
-        recent_low  = min([float(hist.iloc[-_i]['Low'])  for _i in range(1, 6) if len(hist) > _i])
+        # 直近の反発（戻り）を検出
+        recent_low  = min([float(hist.iloc[-_i]['Low']) for _i in range(1, 6) if len(hist) > _i])
         bounce_pct  = (current_price - recent_low) / recent_low * 100 if recent_low > 0 else 0
 
         # 陽線続き（戻り局面の確認）
@@ -639,7 +637,7 @@ def analyze_short(ticker_code, company_name,
         elif prev['Close'] >= prev['Open'] and latest['Close'] < latest['Open']:
             if "上ヒゲ陰線" not in top_signs:
                 top_signs.append("陰線転換")
-        # 上ヒゲ（陽線でも上ヒゲが長い）
+        # 長い上ヒゲ（陽線でも上ヒゲが長い）
         if body > 0 and upper_wick >= body * 2.0 and "上ヒゲ陰線" not in top_signs:
             top_signs.append("長い上ヒゲ")
 
@@ -669,8 +667,7 @@ def analyze_short(ticker_code, company_name,
             except:
                 return np.nan
 
-        # --- 必須: 200日線を下回っている（乖離幅でスコア加算）---
-        # 1. 200日線乖離（大きいほど下落トレンドが強い）
+        # 1. 200日線乖離
         if diff_pct_200 <= -20:
             score += 4
             reasons.append(f"200日線大幅下乖離({diff_pct_200:.1f}%)")
@@ -686,17 +683,17 @@ def analyze_short(ticker_code, company_name,
         elif diff_pct_200 > 0:
             warnings.append(f"200日線上⚠️ (+{diff_pct_200:.1f}%)")
 
-        # 2. 200日線が下向き（+1点）
+        # 2. 200日線が下向き
         if ma200_slope_down:
             score += 1
             reasons.append("200日線下向き継続")
 
-        # 3. 25日線下向き（+1点）
+        # 3. 25日線下向き
         if ma25_slope_down:
             score += 1
             reasons.append("25日線下向き")
 
-        # 4. MA配列（25日線 < 75日線 < 200日線 → 完全下落配列）
+        # 4. MA配列（完全下落配列）
         if ma25 < ma75 < ma200:
             score += 2
             reasons.append("完全下落配列(25<75<200)")
@@ -704,7 +701,7 @@ def analyze_short(ticker_code, company_name,
             score += 1
             reasons.append("25日線<200日線")
 
-        # 5. RSI（戻り一服ゾーン 40〜60 がベスト）
+        # 5. RSI（戻り一服ゾーン）
         if rsi_short_min <= rsi <= rsi_short_max:
             score += 2
             reasons.append(f"RSI戻り一服({rsi:.0f})")
@@ -718,7 +715,7 @@ def analyze_short(ticker_code, company_name,
             score += 1
             reasons.append(f"RSI({rsi:.0f})")
 
-        # 6. 信用倍率（高いほど買い残過多 → 整理売り圧力 → 空売り有利）
+        # 6. 信用倍率
         cr = safe_float(credit_ratio)
         if not np.isnan(cr):
             if cr >= 10:
@@ -733,7 +730,7 @@ def analyze_short(ticker_code, company_name,
             elif cr <= 1.0:
                 warnings.append(f"信用倍率{cr:.2f}(売り残多め・踏み上げ注意⚠️)")
 
-        # 7. 売り残前週比プラス（+1点）
+        # 7. 売り残前週比プラス
         sc_val = safe_float(credit_sell_change)
         if not np.isnan(sc_val):
             if sc_val > 0:
@@ -742,7 +739,7 @@ def analyze_short(ticker_code, company_name,
             elif sc_val < -10000:
                 warnings.append(f"売り残大幅減少({sc_val:,.0f}株)⚠️")
 
-        # 8. 失速サイン（戻り売りエントリー根拠）
+        # 8. 失速サイン
         top_score = 0
         if "被せ線" in top_signs:
             top_score = 3
@@ -769,7 +766,6 @@ def analyze_short(ticker_code, company_name,
             reasons.append("MACD下方向")
 
         # --- 必須条件チェック ---
-        # 200日線上は除外
         trend_down = diff_pct_200 < 0  # 200日線を下回っていること
 
         if not trend_down:
@@ -809,7 +805,7 @@ def analyze_short(ticker_code, company_name,
             "BB位置":        f"{bb_pos:.0f}%",
             "出来高倍率":    f"{vol_ratio:.1f}x",
             "陽線日数":      bullish_count,
-            "失速サイン":    " / ".join(top_signs) if top_signs else "-",
+            "失速サイン":    " / ".join(top_signs) if top_signs else "-",  # ← 正しいキー名
             "信用倍率":      f"{cr:.2f}" if not np.isnan(cr) else "-",
             "売り残前週比":  f"{sc_val:+,.0f}株" if not np.isnan(sc_val) else "-",
             "損切り価格":    stop_price,
@@ -1156,9 +1152,9 @@ with tab_short:
     with st.expander("⚙️ 空売り条件設定", expanded=False):
         sc1, sc2, sc3, sc4 = st.columns(4)
         with sc1:
-            rsi_short_min = st.slider("RSI下限（空売り）", 50, 70, 60, key="s_rsi_min")
+            rsi_short_min = st.slider("RSI下限（空売り）", 30, 60, 40, key="s_rsi_min")
         with sc2:
-            rsi_short_max = st.slider("RSI上限（空売り）", 65, 90, 80, key="s_rsi_max")
+            rsi_short_max = st.slider("RSI上限（空売り）", 45, 75, 60, key="s_rsi_max")
         with sc3:
             short_stop_pct   = st.slider("損切ライン(%)", 2, 10, 4, key="s_stop")
         with sc4:
@@ -1166,13 +1162,13 @@ with tab_short:
 
         st.info(f"""
 **【空売り条件】**
-1. BB **上限タッチ後** 反落サインあり
-2. RSI **過熱圏**（{rsi_short_min}〜{rsi_short_max}）
-3. **信用倍率 低い**（1〜2倍以下が理想）
+1. 株価 < 200日線（下落トレンド確認）
+2. RSI **戻り一服ゾーン**（{rsi_short_min}〜{rsi_short_max}）
+3. **信用倍率 高い**（2倍以上 → 買い残過多）
 4. **売り残 前週比プラス**（売り圧力増加中）
 5. 上ヒゲ陰線🔻 / 被せ線⬇️ / 陰線転換↓
 
-🎯 利確: -{short_target_pct}%（BB下方向）　💀 損切: +{short_stop_pct}%（上抜け）
+🎯 利確: -{short_target_pct}%　💀 損切: +{short_stop_pct}%（上抜け）
         """)
 
     col_up1, col_up2 = st.columns(2)
@@ -1227,13 +1223,14 @@ with tab_short:
 
         st.caption(f"📊 スキャン対象: {len(df_merged)}銘柄")
 
-        if st.button(f"🔻 {len(df_merged)}銘柄を空売りスキャン実行"):
+        # ← スキャンボタン（修正済み）
+        if st.button(f"🔻 {len(df_merged)}銘柄を空売りスキャン実行", type="primary"):
             short_results = []
             short_errors  = []
             s_bar         = st.progress(0)
             s_status      = st.empty()
 
-            def safe_float(val):
+            def safe_float_local(val):
                 try:
                     return float(str(val).replace(',', ''))
                 except:
@@ -1245,7 +1242,7 @@ with tab_short:
                         if k in str(c):
                             v = row[c]
                             if pd.notna(v):
-                                return safe_float(v)
+                                return safe_float_local(v)
                 return np.nan
 
             for i, (_, row) in enumerate(df_merged.iterrows()):
@@ -1278,11 +1275,13 @@ with tab_short:
                 cands = short_df_tmp[short_df_tmp['判定'] == "🔻 空売り候補"]
                 if not cands.empty:
                     msg = "【🔻空売りサイン点灯】\n" + "\n".join(
-                        [f"・{r['コード']} {r['会社名']} スコア{r['スコア']} 信用倍率{r['信用倍率']} 天井:{r['天井サイン']}"
+                        [f"・{r['コード']} {r['会社名']} スコア{r['スコア']} 信用倍率{r['信用倍率']} 失速:{r['失速サイン']}"
                          for _, r in cands.iterrows()])
                     requests.post(discord_webhook, json={"content": msg})
 
+    # ================================================================
     # 空売り結果表示
+    # ================================================================
     if st.session_state.short_results:
         short_df = pd.DataFrame(st.session_state.short_results)
 
@@ -1294,13 +1293,16 @@ with tab_short:
             sc_display = short_cands.copy()
             if 'チャート' in sc_display.columns:
                 sc_display['📊'] = sc_display['チャート']
+
+            # ← 列名を analyze_short() の返り値と完全一致させる
             disp_cols = [
                 "コード", "会社名", "スコア", "現在値",
                 "RSI(14)", "MACD", "BB位置",
                 "信用倍率", "売り残前週比",
-                "天井サイン", "陽線日数",
+                "失速サイン",   # 修正: "天井サイン" → "失速サイン"
+                "陽線日数",
                 "損切り価格", "利確目標", "RRレシオ",
-                "200日乖離", "25日乖離",
+                "200日乖離", "25日乖離", "MA配列",
                 "根拠", "注意点", "📊"
             ]
             disp = [c for c in disp_cols if c in sc_display.columns]
@@ -1311,7 +1313,7 @@ with tab_short:
                     "📊":         st.column_config.LinkColumn("📊", display_text="📊"),
                     "損切り価格": st.column_config.NumberColumn("損切💀", format="%.0f"),
                     "利確目標":   st.column_config.NumberColumn("利確🎯", format="%.0f"),
-                    "スコア":     st.column_config.ProgressColumn("スコア", min_value=0, max_value=14),
+                    "スコア":     st.column_config.ProgressColumn("スコア", min_value=0, max_value=15),
                 },
                 height=400,
             )
@@ -1328,8 +1330,9 @@ with tab_short:
             st.info("空売り候補は現在ありません。条件を調整してみてください。")
 
         st.markdown("---")
-        st.subheader("👀 監視（天井形成中）")
-        watch_short = short_df[short_df['判定'] == "👀 監視（天井形成中）"].sort_values('スコア', ascending=False)
+        st.subheader("👀 監視（下落トレンド継続）")
+        # ← 判定ステータスを analyze_short() の返り値と完全一致させる
+        watch_short = short_df[short_df['判定'] == "👀 監視（下落トレンド継続）"].sort_values('スコア', ascending=False)
         if not watch_short.empty:
             st.dataframe(watch_short, use_container_width=True,
                          column_config={"チャート": st.column_config.LinkColumn("📊")})
@@ -1337,10 +1340,11 @@ with tab_short:
             st.write("該当なし")
 
         st.markdown("---")
-        st.subheader("👀 天井サイン待ち")
-        sign_wait_short = short_df[short_df['判定'] == "👀 監視（天井サイン待ち）"].sort_values('スコア', ascending=False)
-        if not sign_wait_short.empty:
-            st.dataframe(sign_wait_short, use_container_width=True,
+        st.subheader("⏳ 様子見")
+        # ← 判定ステータスを analyze_short() の返り値と完全一致させる
+        watch_short2 = short_df[short_df['判定'] == "⏳ 様子見"].sort_values('スコア', ascending=False)
+        if not watch_short2.empty:
+            st.dataframe(watch_short2, use_container_width=True,
                          column_config={"チャート": st.column_config.LinkColumn("📊")})
         else:
             st.write("該当なし")
@@ -1348,11 +1352,11 @@ with tab_short:
         st.markdown("---")
         st.subheader("📊 空売りスキャン統計")
         sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-        sc1.metric("解析銘柄数",     len(short_df))
-        sc2.metric("🔻 空売り候補", len(short_df[short_df['判定'] == "🔻 空売り候補"]))
-        sc3.metric("👀 天井形成中", len(short_df[short_df['判定'] == "👀 監視（天井形成中）"]))
-        sc4.metric("👀 サイン待ち", len(short_df[short_df['判定'] == "👀 監視（天井サイン待ち）"]))
-        sc5.metric("➖ 対象外",     len(short_df[short_df['判定'].isin(["⛔ 除外（BB下部）", "➖ 対象外"])]))
+        sc1.metric("解析銘柄数",           len(short_df))
+        sc2.metric("🔻 空売り候補",        len(short_df[short_df['判定'] == "🔻 空売り候補"]))
+        sc3.metric("👀 監視",              len(short_df[short_df['判定'] == "👀 監視（下落トレンド継続）"]))
+        sc4.metric("⏳ 様子見",            len(short_df[short_df['判定'] == "⏳ 様子見"]))
+        sc5.metric("⛔ 除外/対象外",       len(short_df[short_df['判定'].isin(["⛔ 除外（200日線上・買いスキャン対象）", "➖ 対象外"])]))
 
         st.markdown("---")
         st.subheader("📋 全銘柄一覧（空売りスキャン）")
