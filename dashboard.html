@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>売買指令システム v5</title>
+<style>
+:root {
+  --bg: #080b10;
+  --s1: #0f1318;
+  --s2: #161b23;
+  --s3: #1c2230;
+  --border: #252c3a;
+  --text: #dde4f0;
+  --muted: #5e6a80;
+  --dim: #3a4255;
+  --green: #3dd68c;
+  --green-bg: rgba(61,214,140,0.08);
+  --green-bd: rgba(61,214,140,0.25);
+  --red: #f05454;
+  --red-bg: rgba(240,84,84,0.09);
+  --red-bd: rgba(240,84,84,0.28);
+  --yellow: #f5c542;
+  --yellow-bg: rgba(245,197,66,0.09);
+  --yellow-bd: rgba(245,197,66,0.28);
+  --blue: #5b9cf6;
+  --blue-bg: rgba(91,156,246,0.09);
+  --orange: #f0924a;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Helvetica Neue','Hiragino Sans',sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;padding-bottom:40px;}
+
+/* ── HEADER ── */
+.hdr{background:var(--s1);border-bottom:1px solid var(--border);padding:14px 14px 10px;position:sticky;top:0;z-index:100;}
+.hdr-row{display:flex;justify-content:space-between;align-items:center;}
+.hdr-title{font-size:17px;font-weight:900;letter-spacing:-0.03em;}
+.hdr-sub{font-size:11px;color:var(--muted);margin-top:3px;}
+.btn{background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--blue);cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;padding:7px 12px;transition:background .15s;}
+.btn:active{background:var(--border);}
+.btn.primary{background:var(--blue-bg);border-color:rgba(91,156,246,0.4);color:var(--blue);}
+.btn:disabled{opacity:.45;pointer-events:none;}
+#stamp{font-size:11px;color:var(--muted);margin-top:6px;}
+
+/* ── MARKET BAR ── */
+.mbar{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:10px 12px;}
+.mc{background:var(--s1);border:1px solid var(--border);border-radius:9px;padding:9px 10px;}
+.mc-lbl{font-size:10px;color:var(--muted);font-weight:600;margin-bottom:3px;}
+.mc-val{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-0.02em;}
+.mc-diff{font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px;}
+.up{color:var(--green);}.down{color:var(--red);}.neu{color:var(--text);}
+
+/* ── VERDICT BANNER ── */
+.banner{margin:0 12px 10px;border-radius:12px;padding:14px 16px;border:1.5px solid;}
+.banner.ok{background:var(--green-bg);border-color:var(--green-bd);}
+.banner.ng{background:var(--red-bg);border-color:var(--red-bd);}
+.banner.caut{background:var(--yellow-bg);border-color:var(--yellow-bd);}
+.banner.idle{background:var(--s1);border-color:var(--border);}
+.banner-lbl{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:5px;}
+.ok .banner-lbl{color:var(--green);}.ng .banner-lbl{color:var(--red);}.caut .banner-lbl{color:var(--yellow);}.idle .banner-lbl{color:var(--muted);}
+.banner-main{font-size:20px;font-weight:900;letter-spacing:-0.02em;margin-bottom:5px;}
+.ok .banner-main{color:var(--green);}.ng .banner-main{color:var(--red);}.caut .banner-main{color:var(--yellow);}.idle .banner-main{color:var(--muted);}
+.banner-body{font-size:12.5px;color:var(--text);line-height:1.6;}
+
+/* ── SECTION LABEL ── */
+.slbl{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:12px 15px 5px;display:flex;justify-content:space-between;align-items:center;}
+
+/* ── CSV UPLOAD ── */
+.upload-zone{margin:0 12px 10px;background:var(--s1);border:1.5px dashed var(--border);border-radius:12px;padding:20px;text-align:center;cursor:pointer;transition:border-color .2s;}
+.upload-zone.drag{border-color:var(--blue);}
+.upload-zone input{display:none;}
+.upload-icon{font-size:28px;margin-bottom:8px;}
+.upload-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px;}
+.upload-sub{font-size:11px;color:var(--muted);}
+.upload-name{font-size:12px;color:var(--green);margin-top:8px;font-weight:600;}
+
+/* ── STOCK CARDS ── */
+.stocks-wrap{padding:0 12px;}
+.stock-card{background:var(--s1);border:1px solid var(--border);border-radius:12px;margin-bottom:8px;overflow:hidden;transition:border-color .2s;}
+.stock-card.buy{border-color:var(--green-bd);}
+.stock-card.skip{border-color:var(--border);opacity:.65;}
+.stock-card.watch{border-color:var(--yellow-bd);}
+
+.sc-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px 10px;}
+.sc-name-wrap{}
+.sc-code{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.04em;}
+.sc-name{font-size:15px;font-weight:800;letter-spacing:-0.01em;}
+.sc-verdict{font-size:12px;font-weight:800;padding:4px 10px;border-radius:6px;letter-spacing:.04em;white-space:nowrap;}
+.buy .sc-verdict{background:var(--green-bg);color:var(--green);}
+.skip .sc-verdict{background:var(--s2);color:var(--muted);}
+.watch .sc-verdict{background:var(--yellow-bg);color:var(--yellow);}
+
+.sc-body{padding:0 14px 13px;display:flex;flex-direction:column;gap:7px;}
+
+.sc-command{background:var(--s2);border-radius:8px;padding:10px 12px;}
+.cmd-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;}
+.cmd-label{font-size:11px;color:var(--muted);font-weight:600;}
+.cmd-time{font-size:13px;font-weight:800;color:var(--orange);}
+.cmd-prices{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px;}
+.cp{text-align:center;}
+.cp-l{font-size:10px;color:var(--muted);margin-bottom:2px;}
+.cp-v{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;}
+.entry-price{color:var(--green);}
+.stop-price{color:var(--red);}
+.target-price{color:var(--blue);}
+.price-basis{font-size:10px;color:var(--muted);margin-top:7px;text-align:center;line-height:1.5;}
+.price-basis.confirmed{color:var(--green);font-weight:700;}
+
+.sc-reason{font-size:12px;color:var(--muted);line-height:1.55;padding:0 2px;}
+.sc-tags{display:flex;flex-wrap:wrap;gap:5px;}
+.tag{font-size:10px;font-weight:700;padding:3px 7px;border-radius:4px;letter-spacing:.04em;}
+.tag-bb{background:rgba(91,156,246,0.12);color:var(--blue);}
+.tag-rsi{background:rgba(245,197,66,0.12);color:var(--yellow);}
+.tag-ma{background:rgba(61,214,140,0.12);color:var(--green);}
+.tag-vol{background:rgba(240,84,84,0.12);color:var(--red);}
+.tag-liq{background:rgba(91,156,246,0.12);color:var(--blue);}
+.tag-score{background:var(--s2);color:var(--text);}
+
+/* ── CANDLE SECTION ── */
+.candle-box{background:var(--s2);border-radius:8px;padding:9px 11px;}
+.candle-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.candle-label{font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.07em;text-transform:uppercase;}
+.candle-meta{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;}
+.candle-chart{width:100%;height:60px;display:block;}
+.candle-loading{font-size:11px;color:var(--muted);text-align:center;padding:14px 0;}
+.pattern-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;}
+.pbadge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px;border:1px solid transparent;}
+.pbadge.yes{background:var(--green-bg);color:var(--green);border-color:var(--green-bd);}
+.pbadge.no{background:transparent;color:var(--dim);border:1px solid var(--border);}
+.confirm-line{margin-top:8px;padding:9px 10px;border-radius:8px;font-size:12.5px;font-weight:800;text-align:center;line-height:1.5;}
+.confirm-line.go{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd);}
+.confirm-line.wait{background:var(--yellow-bg);color:var(--yellow);border:1px solid var(--yellow-bd);}
+.confirm-line.none{background:transparent;color:var(--muted);font-weight:600;font-size:11px;}
+
+/* ── EMPTY ── */
+.empty{text-align:center;padding:40px 20px;color:var(--muted);}
+.empty-icon{font-size:36px;margin-bottom:10px;}
+.empty-title{font-size:14px;font-weight:700;color:var(--dim);margin-bottom:4px;}
+.empty-sub{font-size:12px;}
+
+/* ── SPINNER ── */
+@keyframes spin{to{transform:rotate(360deg);}}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:5px;}
+
+/* ── FOOTER NOTE ── */
+.footnote{margin:10px 12px 0;font-size:11px;color:var(--muted);line-height:1.7;background:var(--s1);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.footnote b{color:var(--text);}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-row">
+    <div>
+      <div class="hdr-title">売買指令システム <span style="color:var(--blue);font-size:12px;">v5</span></div>
+      <div class="hdr-sub">地合い × 流動性 × スコア × 5分足パターンで価格まで自動算出</div>
+    </div>
+    <button class="btn primary" onclick="runAll()">🔄 更新</button>
+  </div>
+  <div id="stamp">起動中…</div>
+</div>
+
+<!-- MARKET BAR -->
+<div class="mbar">
+  <div class="mc"><div class="mc-lbl">日経225</div><div class="mc-val neu" id="mk-nk">—</div><div class="mc-diff neu" id="mk-nkd">—</div></div>
+  <div class="mc"><div class="mc-lbl">ドル円</div><div class="mc-val neu" id="mk-fx">—</div><div class="mc-diff neu" id="mk-fxd">—</div></div>
+  <div class="mc"><div class="mc-lbl">NYダウ</div><div class="mc-val neu" id="mk-dw">—</div><div class="mc-diff neu" id="mk-dwd">—</div></div>
+  <div class="mc"><div class="mc-lbl">VIX</div><div class="mc-val neu" id="mk-vx">—</div><div class="mc-diff neu" id="mk-vxn">—</div></div>
+</div>
+
+<!-- VERDICT BANNER -->
+<div class="banner idle" id="banner">
+  <div class="banner-lbl">地合い判定</div>
+  <div class="banner-main" id="bn-main"><span class="spin"></span>取得中</div>
+  <div class="banner-body" id="bn-body">市場データを取得しています…</div>
+</div>
+
+<!-- CSV UPLOAD -->
+<div class="slbl">スキャン結果 CSV</div>
+<div class="upload-zone" id="dropZone" onclick="document.getElementById('csvInput').click()">
+  <input type="file" id="csvInput" accept=".csv" onchange="handleCSV(this.files[0])">
+  <div class="upload-icon">📂</div>
+  <div class="upload-title">CSVをタップして選択</div>
+  <div class="upload-sub">アンチグラビティ・コア Pro+ のスキャン結果</div>
+  <div class="upload-name" id="csvName"></div>
+</div>
+
+<!-- STOCKS -->
+<div class="slbl" id="stocksLabel" style="display:none">
+  <span>銘柄別 売買指令</span>
+  <button class="btn" id="candleBtn" onclick="fetchAllCandlePatterns()">🕯️ 5分足を確認</button>
+</div>
+<div class="stocks-wrap" id="stocksWrap">
+  <div class="empty">
+    <div class="empty-icon">📋</div>
+    <div class="empty-title">CSVをアップロードしてください</div>
+    <div class="empty-sub">スキャン結果を読み込むと<br>銘柄ごとの売買指令が表示されます</div>
+  </div>
+</div>
+
+<div class="footnote" id="footnote" style="display:none">
+  <b>流動性フィルター：</b> 出来高30万株以上 または 売買代金5億円以上 を満たさない銘柄は自動で見送り（薄い銘柄での約定リスク・スリッページ回避）。<br><br>
+  <b>価格の決め方：</b><br>
+  ① CSVアップロード直後は、現在値ベースの暫定値（指値=現在値の-0.3%、逆指値=指値の-3%、目標値=指値の+5%）を表示。<br>
+  ② 「🕯️ 5分足を確認」で<b>下ヒゲ／陽線転換／つつみ線</b>のいずれかが確定すると、価格を<b>そのローソク足の実値</b>に更新：<br>
+  　指値＝確定ローソクの終値／逆指値＝直近2本の安値の低い方／目標値＝指値＋リスク幅（指値−逆指値）×2。<br><br>
+  損切りは<b>終値ベースのみ</b>。日中の瞬間値で切らない。逆指値はエントリー直後に必ず設定してから現場へ。見送りは負けではなくリスク管理。
+</div>
+
+<script>
+// ═══════════════════════════════
+// MARKET DATA
+// ═══════════════════════════════
+let MKT = { nk:null, nkPrev:null, fx:null, fxPrev:null, dw:null, dwPrev:null, vix:null };
+
+async function fetchSymbol(sym, interval='1d', range='5d') {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=${interval}&range=${range}`;
+  const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  const r = await fetch(proxy, {signal: AbortSignal.timeout(9000)});
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function fetchQuote(sym) {
+  const d = await fetchSymbol(sym, '1d', '5d');
+  const meta = d.chart.result[0].meta;
+  return { cur: meta.regularMarketPrice, prev: meta.chartPreviousClose || meta.previousClose };
+}
+
+async function fetchMarket() {
+  const jobs = [
+    fetchQuote('^N225').then(v=>{MKT.nk=v.cur;MKT.nkPrev=v.prev;}).catch(()=>{}),
+    fetchQuote('USDJPY=X').then(v=>{MKT.fx=v.cur;MKT.fxPrev=v.prev;}).catch(()=>{}),
+    fetchQuote('^DJI').then(v=>{MKT.dw=v.cur;MKT.dwPrev=v.prev;}).catch(()=>{}),
+    fetchQuote('^VIX').then(v=>{MKT.vix=v.cur;}).catch(()=>{}),
+  ];
+  await Promise.allSettled(jobs);
+}
+
+function diff(a,b){ return (a&&b) ? a-b : null; }
+function fmt(v,d=0){ return v==null?'—':v.toLocaleString('ja-JP',{maximumFractionDigits:d,minimumFractionDigits:d}); }
+function fmtD(v,d=0,u=''){ if(v==null)return'—'; return (v>=0?'+':'')+v.toLocaleString('ja-JP',{maximumFractionDigits:d})+u; }
+function cls(v){ return v==null?'neu':v>0?'up':'down'; }
+
+function renderMarket() {
+  const nkd=diff(MKT.nk,MKT.nkPrev), fxd=diff(MKT.fx,MKT.fxPrev), dwd=diff(MKT.dw,MKT.dwPrev);
+  set('mk-nk', fmt(MKT.nk), cls(nkd));
+  set('mk-nkd', fmtD(nkd)+'円', cls(nkd));
+  set('mk-fx', fmt(MKT.fx,2), cls(fxd));
+  set('mk-fxd', fmtD(fxd,2)+'円', cls(fxd));
+  set('mk-dw', fmt(MKT.dw), cls(dwd));
+  set('mk-dwd', fmtD(dwd), cls(dwd));
+  const vixCls = MKT.vix==null?'neu':MKT.vix>=30?'down':MKT.vix>=20?'neu':'up';
+  set('mk-vx', fmt(MKT.vix,1), vixCls);
+  set('mk-vxn', MKT.vix==null?'—':MKT.vix>=30?'⚠️極度警戒':MKT.vix>=25?'⚠️警戒':MKT.vix>=20?'注意':'安定', vixCls);
+}
+
+function set(id, text, cls=''){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.textContent=text;
+  if(cls) el.className=el.className.replace(/up|down|neu/g,'').trim()+' '+cls;
+}
+
+// ═══════════════════════════════
+// MARKET VERDICT ENGINE
+// ═══════════════════════════════
+function getMarketVerdict() {
+  const nkd = diff(MKT.nk, MKT.nkPrev);
+  const fxd = diff(MKT.fx, MKT.fxPrev);
+  const vix = MKT.vix;
+
+  if (nkd !== null && nkd >= 1500)
+    return { cls:'ng', main:'🚫 新規エントリー禁止', body:`先物 +${Math.round(nkd)}円（大幅高）。保有株は引け決済を検討。新規は全銘柄見送り。`, code:'BIG_UP' };
+  if (nkd !== null && nkd <= -1500)
+    return { cls:'ng', main:'🚫 エントリー禁止', body:`先物 ${Math.round(nkd)}円（パニック売り水準）。市場崩壊リスク。全銘柄見送り。`, code:'PANIC' };
+  if (vix !== null && vix >= 30)
+    return { cls:'ng', main:'🚫 高ボラ・見送り', body:`VIX ${vix.toFixed(1)}（極度警戒域）。予測不能な値動き。全銘柄見送り。`, code:'HIGH_VIX' };
+  if (Math.abs(fxd||0) >= 2)
+    return { cls:'ng', main:'🚫 ドル円急変', body:`ドル円 ${fmtD(fxd,2)}円（急変）。輸出入株に予測不能な影響。見送り。`, code:'FX_SHOCK' };
+
+  if (nkd !== null && nkd >= 1000)
+    return { cls:'caut', main:'⚠️ 慎重モード', body:`先物 +${Math.round(nkd)}円（大幅高）。新規は見送りが無難。保有は+1,500円到達で引け決済。`, code:'UP' };
+  if (vix !== null && vix >= 20)
+    return { cls:'caut', main:'⚠️ やや警戒', body:`VIX ${vix.toFixed(1)}（警戒域）。条件が揃った銘柄のみ少量。逆指値を必ず設定。`, code:'MID_VIX' };
+
+  if (nkd !== null && nkd <= -1000)
+    return { cls:'ok', main:'✅ 押し目チャンス', body:`先物 ${Math.round(nkd)}円（大幅安）。アンチグラビティ戦略の本命環境。スキャン銘柄を積極確認。`, code:'DIP' };
+  if (nkd !== null && nkd <= -300)
+    return { cls:'ok', main:'✅ エントリー検討可', body:`先物 ${Math.round(nkd)}円（小幅安）。押し目環境。パターン①②を確認後エントリー。`, code:'SLIGHT_DIP' };
+
+  return { cls:'ok', main:'✅ 通常判断', body:`先物 ${nkd!=null?fmtD(Math.round(nkd))+'円':'データ確認中'}。通常条件でパターン判断。NG銘柄は見送る。`, code:'NORMAL' };
+}
+
+function renderBanner(v) {
+  const b=document.getElementById('banner');
+  b.className='banner '+v.cls;
+  document.getElementById('bn-main').innerHTML=v.main;
+  document.getElementById('bn-body').textContent=v.body;
+}
+
+// ═══════════════════════════════
+// CSV PARSER
+// ═══════════════════════════════
+let STOCKS = [];
+
+function handleCSV(file) {
+  if (!file) return;
+  document.getElementById('csvName').textContent = '📄 '+file.name;
+  const reader = new FileReader();
+  reader.onload = e => {
+    STOCKS = parseCSV(e.target.result);
+    renderStocks(getMarketVerdict());
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(',').map(h=>h.trim().replace(/"/g,''));
+
+  const colMap = {
+    code:    ['コード','証券コード','銘柄コード','code','Code','ticker'],
+    name:    ['銘柄名','会社名','銘柄','name','Name'],
+    price:   ['現在値','株価','終値','現値','price','Price','close'],
+    rsi:     ['RSI','rsi'],
+    bb:      ['BBシグナル','BB','ボリンジャー','bb_signal','bb'],
+    score:   ['スコア','score','Score','総合スコア','reversal_score'],
+    ma200:   ['200MA','ma200','200日MA','MA200'],
+    volume:  ['出来高','volume','Volume'],
+    pattern: ['パターン','pattern','シグナル'],
+    lowerwick: ['下ヒゲ','lower_wick','下影'],
+  };
+
+  function findCol(aliases) {
+    for (const a of aliases) {
+      const i = headers.findIndex(h => h.includes(a));
+      if (i >= 0) return i;
+    }
+    return -1;
+  }
+
+  const idx = {};
+  for (const [k,v] of Object.entries(colMap)) idx[k] = findCol(v);
+
+  return lines.slice(1).map(line => {
+    if (!line.trim()) return null;
+    const cols = line.split(',').map(c=>c.trim().replace(/"/g,''));
+    const get = (k) => idx[k]>=0 ? cols[idx[k]] : null;
+    const num = (k) => { const v=get(k); return v ? parseFloat(v.replace(/[,円%]/g,'')) : null; };
+
+    return {
+      code:    get('code') || '—',
+      name:    get('name') || '銘柄名不明',
+      price:   num('price'),
+      rsi:     num('rsi'),
+      bb:      get('bb'),
+      score:   num('score'),
+      ma200:   num('ma200'),
+      volume:  num('volume'),
+      pattern: get('pattern'),
+      lowerwick: get('lowerwick'),
+      raw: cols,
+    };
+  }).filter(Boolean);
+}
+
+// ═══════════════════════════════
+// PER-STOCK DECISION ENGINE (STEP 1: スキャン条件)
+// ═══════════════════════════════
+function judgeStock(s, mktVerdict) {
+  const result = { action:'skip', reason:[], tags:[], entryTime:'—', entryPrice:null, stopPrice:null, targetPrice:null };
+
+  if (mktVerdict.cls === 'ng') {
+    result.reason.push('地合いNG：' + mktVerdict.main);
+    return result;
+  }
+
+  // 流動性フィルター：出来高30万株以上 または 売買代金5億円以上 を満たさない場合は見送り
+  let liqTag = null;
+  if (s.volume !== null && s.price !== null) {
+    const tradingValue = s.volume * s.price;
+    const tvOku = tradingValue / 1e8;
+    const liquidityOK = tradingValue >= 5e8 || s.volume >= 3e5;
+    if (!liquidityOK) {
+      result.reason.push(`流動性不足（出来高${(s.volume/10000).toFixed(1)}万株・売買代金${tvOku.toFixed(1)}億円／基準：出来高30万株 or 売買代金5億円）`);
+      return result;
+    }
+    liqTag = { t:`売買代金${tvOku.toFixed(1)}億`, cls:'tag-liq' };
+  }
+
+  const nkd = diff(MKT.nk, MKT.nkPrev);
+  const reasons = [];
+  const tags = [];
+  let score = 0;
+
+  if (s.rsi !== null) {
+    if (s.rsi >= 30 && s.rsi <= 42) {
+      score += 3; tags.push({t:'RSI'+s.rsi.toFixed(0), cls:'tag-rsi'});
+      reasons.push(`RSI ${s.rsi.toFixed(0)}（割安域・反発期待）`);
+    } else if (s.rsi > 42 && s.rsi <= 55) {
+      score += 1; tags.push({t:'RSI'+s.rsi.toFixed(0), cls:'tag-rsi'});
+    } else if (s.rsi < 30) {
+      score += 2; tags.push({t:'RSI超売れ'+s.rsi.toFixed(0), cls:'tag-rsi'});
+      reasons.push(`RSI ${s.rsi.toFixed(0)}（売られすぎ・注意も必要）`);
+    } else {
+      result.reason.push(`RSI ${s.rsi.toFixed(0)}（高め・見送り）`);
+      return result;
+    }
+  }
+
+  if (s.bb) {
+    const bbLower = s.bb.includes('下限') || s.bb.includes('lower') || s.bb.includes('タッチ') || s.bb.includes('below');
+    if (bbLower) { score += 3; tags.push({t:'BB下限', cls:'tag-bb'}); reasons.push('ボリンジャー下限タッチ'); }
+  }
+
+  if (s.score !== null) {
+    tags.push({t:'Score:'+s.score.toFixed(1), cls:'tag-score'});
+    if (s.score >= 3) score += 2;
+    else if (s.score >= 2) score += 1;
+    else if (s.score < 1) { result.reason.push('反転スコア不足'); return result; }
+  }
+
+  if (mktVerdict.code === 'DIP') score += 2;
+  if (mktVerdict.code === 'UP') score -= 2;
+  if (mktVerdict.code === 'MID_VIX') score -= 1;
+
+  if (score >= 5) {
+    result.action = 'buy';
+  } else if (score >= 3) {
+    result.action = 'watch';
+    reasons.push('条件やや不足。5分足で確認');
+  } else {
+    result.reason.push('シグナル不足（スコア:'+score+'）');
+    return result;
+  }
+
+  if (nkd !== null && nkd <= -300) {
+    result.entryTime = '09:15〜09:30（寄り底狙い）';
+  } else if (nkd !== null && nkd >= 300) {
+    result.entryTime = '09:30〜10:00（寄り天押し目）';
+  } else {
+    result.entryTime = '09:15〜09:30（様子見つつ）';
+  }
+
+  // 暫定価格（5分足確認前の参考値）
+  if (s.price) {
+    const p = s.price;
+    result.entryPrice = Math.round(p * 0.997);
+    result.stopPrice = Math.round(result.entryPrice * 0.97);
+    result.targetPrice = Math.round(result.entryPrice * 1.05);
+  }
+
+  if (liqTag) tags.push(liqTag);
+
+  result.reason = reasons;
+  result.tags = tags;
+  return result;
+}
+
+// ═══════════════════════════════
+// STEP 2: 5分足ローソク足パターン判定
+// ═══════════════════════════════
+function jpSymbol(code) {
+  const c = String(code).replace(/[^0-9A-Za-z]/g,'');
+  if (!c) return null;
+  return c.includes('.') ? c : c + '.T';
+}
+
+async function fetchCandles(code) {
+  const symbol = jpSymbol(code);
+  if (!symbol) throw new Error('invalid code');
+  const d = await fetchSymbol(symbol, '5m', '1d');
+  const result = d.chart.result[0];
+  const ts = result.timestamp || [];
+  const q = result.indicators.quote[0];
+  const candles = [];
+  for (let i=0;i<ts.length;i++){
+    if (q.open[i]==null || q.close[i]==null || q.high[i]==null || q.low[i]==null) continue;
+    candles.push({ time: ts[i], open:q.open[i], high:q.high[i], low:q.low[i], close:q.close[i], volume:(q.volume?q.volume[i]:0) });
+  }
+  return candles;
+}
+
+function analyzeCandlePatterns(candles) {
+  if (candles.length < 3) {
+    return {
+      patterns: [
+        {key:'hammer', label:'下ヒゲ', detected:false},
+        {key:'reversal', label:'陽線転換', detected:false},
+        {key:'engulf', label:'つつみ線', detected:false},
+        {key:'calm', label:'下落一服', detected:false},
+      ],
+      confirmed: false, insufficient: true
+    };
+  }
+
+  const last = candles[candles.length-1];
+  const prev = candles[candles.length-2];
+  const prev2 = candles[candles.length-3];
+
+  const body = (c) => Math.abs(c.close - c.open);
+  const range = (c) => (c.high - c.low) || 0.0001;
+  const lowerWick = (c) => Math.min(c.open, c.close) - c.low;
+  const isGreen = (c) => c.close > c.open;
+  const isRed = (c) => c.close < c.open;
+
+  const hammer = lowerWick(last) >= body(last) * 1.2 && lowerWick(last) >= range(last) * 0.45;
+  const reversal = isGreen(last) && (isRed(prev) || isRed(prev2)) && last.close > prev.close;
+  const engulf = isGreen(last) && isRed(prev) && last.open <= prev.close && last.close >= prev.open;
+  const avgBody = (body(prev) + body(prev2)) / 2;
+  const calm = avgBody > 0 && body(last) < avgBody * 0.55;
+
+  const patterns = [
+    {key:'hammer', label:'下ヒゲ', detected:hammer},
+    {key:'reversal', label:'陽線転換', detected:reversal},
+    {key:'engulf', label:'つつみ線', detected:engulf},
+    {key:'calm', label:'下落一服', detected:calm},
+  ];
+
+  return { patterns, confirmed: hammer || reversal || engulf, insufficient: false };
+}
+
+// ローソク足の実値から指値・逆指値・目標値を算出
+// 指値 = 確定ローソクの終値
+// 逆指値 = 直近2本の安値のうち低い方（反転の根拠が崩れるライン）
+// 目標値 = 指値 + リスク幅(指値-逆指値) × 2
+function calcCandleBasedLevels(candles, analysis) {
+  if (candles.length < 2 || !analysis.confirmed) return null;
+  const last = candles[candles.length-1];
+  const prev = candles[candles.length-2];
+  const entry = last.close;
+  const stop = Math.min(last.low, prev.low);
+  const risk = entry - stop;
+  if (!(risk > 0)) return null;
+  const target = entry + risk * 2;
+  return { entry: Math.round(entry), stop: Math.round(stop), target: Math.round(target), risk: Math.round(risk) };
+}
+
+function renderCandleSVG(candles) {
+  const show = candles.slice(-12);
+  if (!show.length) return '<div class="candle-loading">ローソク足データなし</div>';
+
+  const w = 280, h = 60, padX = 6, padY = 6;
+  const highs = show.map(c=>c.high), lows = show.map(c=>c.low);
+  const max = Math.max(...highs), min = Math.min(...lows);
+  const range = (max - min) || (max * 0.001) || 1;
+  const cw = (w - padX*2) / show.length;
+  const y = (v) => padY + (max - v) / range * (h - padY*2);
+
+  let svg = `<svg viewBox="0 0 ${w} ${h}" class="candle-chart" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">`;
+  show.forEach((c,i)=>{
+    const x = padX + i*cw + cw/2;
+    const green = c.close >= c.open;
+    const color = green ? 'var(--green)' : 'var(--red)';
+    const bw = Math.max(cw*0.55, 2);
+    svg += `<line x1="${x.toFixed(2)}" y1="${y(c.high).toFixed(2)}" x2="${x.toFixed(2)}" y2="${y(c.low).toFixed(2)}" stroke="${color}" stroke-width="1"/>`;
+    const yOpen = y(c.open), yClose = y(c.close);
+    const bodyTop = Math.min(yOpen,yClose);
+    const bodyH = Math.max(Math.abs(yOpen-yClose), 1);
+    svg += `<rect x="${(x-bw/2).toFixed(2)}" y="${bodyTop.toFixed(2)}" width="${bw.toFixed(2)}" height="${bodyH.toFixed(2)}" fill="${color}"/>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+function candleTimeRange(candles) {
+  const show = candles.slice(-12);
+  if (!show.length) return '';
+  const fmtTime = (ts) => {
+    const d = new Date(ts*1000);
+    return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+  };
+  return `${fmtTime(show[0].time)}〜${fmtTime(show[show.length-1].time)}`;
+}
+
+async function fetchAllCandlePatterns() {
+  const btn = document.getElementById('candleBtn');
+  btn.disabled = true;
+  btn.textContent = '取得中…';
+
+  const targets = [...document.querySelectorAll('[data-candle-code]')];
+  for (const el of targets) {
+    const code = el.getAttribute('data-candle-code');
+    const action = el.getAttribute('data-candle-action');
+    el.innerHTML = '<div class="candle-loading"><span class="spin"></span>5分足取得中…</div>';
+    try {
+      const candles = await fetchCandles(code);
+      const analysis = analyzeCandlePatterns(candles);
+      renderCandleResult(el, candles, analysis, action, code);
+    } catch (e) {
+      el.innerHTML = '<div class="candle-loading">⚠️ 5分足データ取得失敗（手動でチャート確認推奨）</div>';
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🕯️ 5分足を確認';
+}
+
+function renderCandleResult(el, candles, analysis, action, code) {
+  const chart = renderCandleSVG(candles);
+  const timeRange = candleTimeRange(candles);
+
+  const badges = analysis.patterns.map(p =>
+    `<span class="pbadge ${p.detected?'yes':'no'}">${p.detected?'✓ ':''}${p.label}</span>`
+  ).join('');
+
+  let confirmHtml = '';
+  if (analysis.insufficient) {
+    confirmHtml = `<div class="confirm-line none">市場時間外 or データ不足 → 板・チャートを直接確認</div>`;
+  } else if (action === 'buy' && analysis.confirmed) {
+    confirmHtml = `<div class="confirm-line go">🟢 反転パターン確認済み → 下記価格でエントリーOK</div>`;
+  } else if (action === 'buy' && !analysis.confirmed) {
+    confirmHtml = `<div class="confirm-line wait">⏳ 反転シグナル待ち（下ヒゲ・陽線転換・つつみ線のいずれかが出るまで待機）</div>`;
+  } else if (action === 'watch' && analysis.confirmed) {
+    confirmHtml = `<div class="confirm-line go">🟢 反転確認 → 買い候補に昇格。下記価格でエントリー検討</div>`;
+  } else if (action === 'watch' && !analysis.confirmed) {
+    confirmHtml = `<div class="confirm-line wait">⏳ シグナル不足のため様子見継続</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="candle-head">
+      <span class="candle-label">5分足（直近）</span>
+      <span class="candle-meta">${timeRange}</span>
+    </div>
+    ${chart}
+    <div class="pattern-badges">${badges}</div>
+    ${confirmHtml}
+  `;
+
+  // 価格をローソク足の実値で更新
+  if (analysis.confirmed) {
+    const levels = calcCandleBasedLevels(candles, analysis);
+    if (levels) {
+      const entryEl = document.getElementById('entry-'+code);
+      const stopEl = document.getElementById('stop-'+code);
+      const targetEl = document.getElementById('target-'+code);
+      const basisEl = document.getElementById('basis-'+code);
+      if (entryEl) entryEl.textContent = fmt(levels.entry) + '円';
+      if (stopEl) stopEl.textContent = fmt(levels.stop) + '円';
+      if (targetEl) targetEl.textContent = fmt(levels.target) + '円';
+      if (basisEl) {
+        basisEl.innerHTML = `✓ 5分足の反転ローソク基準（リスク幅 ${fmt(levels.risk)}円 × 2 を目標値に設定）`;
+        basisEl.classList.add('confirmed');
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════
+// RENDER STOCKS
+// ═══════════════════════════════
+function renderStocks(mktVerdict) {
+  const wrap = document.getElementById('stocksWrap');
+  const lbl = document.getElementById('stocksLabel');
+  const fn = document.getElementById('footnote');
+
+  if (!STOCKS.length) {
+    wrap.innerHTML = `<div class="empty"><div class="empty-icon">📋</div><div class="empty-title">CSVをアップロードしてください</div><div class="empty-sub">スキャン結果を読み込むと<br>銘柄ごとの売買指令が表示されます</div></div>`;
+    lbl.style.display='none'; fn.style.display='none';
+    return;
+  }
+
+  lbl.style.display='flex'; fn.style.display='block';
+
+  const judged = STOCKS.map(s => ({ s, j: judgeStock(s, mktVerdict) }));
+  judged.sort((a,b) => {
+    const order = {buy:0, watch:1, skip:2};
+    return order[a.j.action] - order[b.j.action];
+  });
+
+  wrap.innerHTML = judged.map(({s,j}) => {
+    const verdictLabel = j.action==='buy'?'🟢 買い候補':j.action==='watch'?'🟡 様子見':'⚫ 見送り';
+
+    const commandBlock = j.action !== 'skip' ? `
+      <div class="sc-command">
+        <div class="cmd-row">
+          <span class="cmd-label">エントリー時間</span>
+          <span class="cmd-time">${j.entryTime}</span>
+        </div>
+        <div class="cmd-prices">
+          <div class="cp"><div class="cp-l">指値</div><div class="cp-v entry-price" id="entry-${s.code}">${j.entryPrice?fmt(j.entryPrice)+'円':'—'}</div></div>
+          <div class="cp"><div class="cp-l">逆指値（損切）</div><div class="cp-v stop-price" id="stop-${s.code}">${j.stopPrice?fmt(j.stopPrice)+'円':'—'}</div></div>
+          <div class="cp"><div class="cp-l">目標値</div><div class="cp-v target-price" id="target-${s.code}">${j.targetPrice?fmt(j.targetPrice)+'円':'—'}</div></div>
+        </div>
+        <div class="price-basis" id="basis-${s.code}">${j.entryPrice ? '暫定値（現在値ベース）。5分足確認で実値に更新されます' : '5分足確認後に表示されます'}</div>
+      </div>` : '';
+
+    const tagsHtml = j.tags.map(t=>`<span class="tag ${t.cls}">${t.t}</span>`).join('');
+    const reasonText = [...j.reason].join('　/　');
+
+    const candleBlock = j.action !== 'skip' ? `
+      <div class="candle-box" data-candle-code="${s.code}" data-candle-action="${j.action}">
+        <div class="candle-loading">「5分足を確認」を押すとパターン判定と価格更新を表示</div>
+      </div>` : '';
+
+    return `
+    <div class="stock-card ${j.action}">
+      <div class="sc-head">
+        <div class="sc-name-wrap">
+          <div class="sc-code">${s.code}</div>
+          <div class="sc-name">${s.name}</div>
+        </div>
+        <div class="sc-verdict">${verdictLabel}</div>
+      </div>
+      <div class="sc-body">
+        ${commandBlock}
+        ${tagsHtml ? `<div class="sc-tags">${tagsHtml}</div>` : ''}
+        ${reasonText ? `<div class="sc-reason">${reasonText}</div>` : ''}
+        ${candleBlock}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════
+// DRAG & DROP
+// ═══════════════════════════════
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e=>{e.preventDefault();dz.classList.add('drag');});
+dz.addEventListener('dragleave', ()=>dz.classList.remove('drag'));
+dz.addEventListener('drop', e=>{
+  e.preventDefault(); dz.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) handleCSV(f);
+});
+
+// ═══════════════════════════════
+// MAIN LOOP
+// ═══════════════════════════════
+async function runAll() {
+  document.getElementById('stamp').innerHTML = '<span class="spin"></span>取得中…';
+  document.getElementById('bn-main').innerHTML = '<span class="spin"></span>地合い確認中';
+
+  await fetchMarket();
+  renderMarket();
+
+  const v = getMarketVerdict();
+  renderBanner(v);
+
+  if (STOCKS.length) renderStocks(v);
+
+  const now = new Date();
+  document.getElementById('stamp').textContent =
+    `更新：${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+}
+
+runAll();
+setInterval(runAll, 5 * 60 * 1000);
+</script>
+</body>
+</html>
