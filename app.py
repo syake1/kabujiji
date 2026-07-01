@@ -148,7 +148,7 @@ def calculate_ma25(data):
 # ================================================================
 def check_monthly_filter(tk):
     """
-    月足チェック：直近2本を確認
+    月足チェック：直近3本を確認（当月足は未確定のため前月・前々月も含めてチェック）
     NG: 上ヒゲ陰線 / 大陰線
     OK: 陽線 / 小陰線
     戻り値: (ok: bool, label: str)
@@ -158,22 +158,34 @@ def check_monthly_filter(tk):
         if len(monthly) < 3:
             return True, "月足データ不足"
 
-        latest   = monthly.iloc[-1]
-        prev     = monthly.iloc[-2]
-        body     = abs(latest['Close'] - latest['Open'])
-        upper_wick = latest['High'] - max(latest['Close'], latest['Open'])
-        is_bearish = latest['Close'] < latest['Open']
-        prev_body  = abs(prev['Close'] - prev['Open'])
+        # 当月足は未確定の可能性があるため前月（iloc[-2]）を基準にチェック
+        # さらに前々月（iloc[-3]）も念のため確認
+        check_targets = [
+            (monthly.iloc[-2], monthly.iloc[-3], "前月"),   # 前月（確定済み）
+            (monthly.iloc[-1], monthly.iloc[-2], "当月"),   # 当月（確定or未確定）
+        ]
 
-        # NG① 上ヒゲ陰線（天井サイン）
-        if is_bearish and body > 0 and upper_wick >= body * 1.5:
-            return False, "月足上ヒゲ陰線⛔"
+        for (target, prev_candle, label) in check_targets:
+            body       = abs(target['Close'] - target['Open'])
+            upper_wick = target['High'] - max(target['Close'], target['Open'])
+            is_bearish = target['Close'] < target['Open']
+            prev_body  = abs(prev_candle['Close'] - prev_candle['Open'])
 
-        # NG② 大陰線（急落）
-        if is_bearish and prev_body > 0 and body >= prev_body * 2.0:
-            return False, "月足大陰線⛔"
+            # NG① 上ヒゲ陰線（天井サイン）- 上ヒゲが実体の1.5倍以上
+            if is_bearish and body > 0 and upper_wick >= body * 1.5:
+                return False, f"月足上ヒゲ陰線⛔({label})"
 
-        if not is_bearish:
+            # NG② 長い上ヒゲ（陽線でも上ヒゲが実体の2倍以上）
+            if body > 0 and upper_wick >= body * 2.0:
+                return False, f"月足長い上ヒゲ⛔({label})"
+
+            # NG③ 大陰線（前月実体の2倍以上の陰線）
+            if is_bearish and prev_body > 0 and body >= prev_body * 2.0:
+                return False, f"月足大陰線⛔({label})"
+
+        latest = monthly.iloc[-1]
+        is_bearish_latest = latest['Close'] < latest['Open']
+        if not is_bearish_latest:
             return True, "月足陽線✅"
         else:
             return True, "月足小陰線✅"
