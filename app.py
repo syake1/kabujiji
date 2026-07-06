@@ -7,30 +7,21 @@ import google.generativeai as genai
 from datetime import datetime
 import json, os
 
-# --- 初期設定 ---
 st.set_page_config(page_title="アンチグラビティ・コア Pro+", layout="wide")
-
 SAVE_PATH = 'data/scan_result_full.json'
 
 def save_results(df):
     os.makedirs('data', exist_ok=True)
-    data = {
-        'saved_at': datetime.now().strftime('%Y/%m/%d %H:%M'),
-        'records': df.to_dict(orient='records')
-    }
+    data = {'saved_at': datetime.now().strftime('%Y/%m/%d %H:%M'), 'records': df.to_dict(orient='records')}
     with open(SAVE_PATH, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_results():
-    if not os.path.exists(SAVE_PATH):
-        return None, None
+    if not os.path.exists(SAVE_PATH): return None, None
     try:
-        with open(SAVE_PATH, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        df = pd.DataFrame(data['records'])
-        return df, data.get('saved_at', '')
-    except:
-        return None, None
+        with open(SAVE_PATH, 'r', encoding='utf-8') as f: data = json.load(f)
+        return pd.DataFrame(data['records']), data.get('saved_at', '')
+    except: return None, None
 
 if 'analysis_results' not in st.session_state:
     df_loaded, saved_at = load_results()
@@ -40,13 +31,9 @@ if 'analysis_results' not in st.session_state:
     else:
         st.session_state.analysis_results = None
         st.session_state.saved_at = ''
-
 if 'short_results' not in st.session_state:
     st.session_state.short_results = None
 
-# ================================================================
-# タイトル / 設定
-# ================================================================
 st.title("🚀 アンチグラビティ・コア Pro+")
 st.caption("押し目反発 & 空売り 両対応版")
 
@@ -73,14 +60,12 @@ with st.expander("⚙️ システム設定 / スイング条件設定", expande
     with c5: stop_pct = st.slider("損切りライン(%)", 1, 10, 4)
     with c6: target_pct = st.slider("利確ライン(%)", 2, 20, 8)
 
-# ================================================================
-# 指標計算ヘルパー
-# ================================================================
 def calculate_rsi(data, window=14):
     delta = data['Close'].diff()
-    gain  = delta.where(delta > 0, 0).rolling(window).mean()
-    loss  = (-delta.where(delta < 0, 0)).rolling(window).mean()
-    return 100 - (100 / (1 + (gain / loss)))
+    gain = delta.where(delta > 0, 0).rolling(window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 def calculate_macd(data, fast=12, slow=26, signal=9):
     ef = data['Close'].ewm(span=fast, adjust=False).mean()
@@ -93,6 +78,44 @@ def calculate_bb(data, window=20, num_std=2):
     std = data['Close'].rolling(window).std()
     return mid + num_std * std, mid, mid - num_std * std
 
+def check_monthly_filter(tk):
+    try:
+        monthly = tk.history(period="2y", interval="1mo")
+        if len(monthly) < 3: return True, "月足データ不足"
+        check_targets = [(monthly.iloc[-2], monthly.iloc[-3], "前月"), (monthly.iloc[-1], monthly.iloc[-2], "当月")]
+        for (target, prev_candle, label) in check_targets:
+            body = abs(target['Close'] - target['Open'])
+            upper_wick = target['High'] - max(target['Close'], target['Open'])
+            is_bearish = target['Close'] < target['Open']
+            prev_body = abs(prev_candle['Close'] - prev_candle['Open'])
+            if is_bearish and body > 0 and upper_wick >= body * 1.5: return False, f"月足上ヒゲ陰線⛔({label})"
+            if body > 0 and upper_wick >= body * 2.0: return False, f"月足長い上ヒゲ⛔({label})"
+            if is_bearish and prev_body > 0 and body >= prev_body * 2.0: return False, f"月足大陰線⛔({label})"
+        is_bearish_latest = monthly.iloc[-1]['Close'] < monthly.iloc[-1]['Open']
+        return True, "月足小陰線✅" if is_bearish_latest else "月足陽線✅"
+    except: return True, "月足取得エラー"
+
+def check_weekly_filter(tk):
+    try:
+        weekly = tk.history(period="2y", interval="1wk")
+        if len(weekly) < 10: return True, "週足データ不足"
+        weekly['MA25w'] = weekly['Close'].rolling(25).mean()
+        latest = weekly.iloc[-1]
+        ma25w_now = weekly['MA25w'].iloc[-1]
+        ma25w_prev = weekly['MA25w'].iloc[-6] if len(weekly) >= 6 else weekly['MA25w'].iloc[0]
+        if pd.isna(ma25w_now) or pd.isna(ma25w_prev): return True, "週足MA不足"
+        body = abs(latest['Close'] - latest['Open'])
+        upper_wick = latest['High'] - max(latest['Close'], latest['Open'])
+        is_bearish = latest['Close'] < latest['Open']
+        ma25w_slope_down = ma25w_now < ma25w_prev
+        price_below_ma25w = latest['Close'] < ma25w_now
+        if is_bearish and body > 0 and upper_wick >= body * 1.5: return False, "週足上ヒゲ陰線⛔"
+        if ma25w_slope_down and price_below_ma25w: return False, "週足下落転換⛔"
+        if not is_bearish and not ma25w_slope_down: return True, "週足陽線・25週線上向き✅"
+        elif not ma25w_slope_down: return True, "週足25週線上向き✅"
+        else: return True, "週足小陰線（許容）✅"
+    except: return True, "週足取得エラー"
+
 def check_consecutive_bearish(hist, n=2):
     count = 0
     for i in range(1, min(6, len(hist))):
@@ -101,80 +124,54 @@ def check_consecutive_bearish(hist, n=2):
     return count >= n, count
 
 def check_reversal_sign(hist):
-    signs, latest, prev = [], hist.iloc[-1], hist.iloc[-2]
+    signs = []
+    latest, prev = hist.iloc[-1], hist.iloc[-2]
     body = abs(latest['Close'] - latest['Open'])
-    lw = min(latest['Close'], latest['Open']) - latest['Low']
-    if latest['Close'] > latest['Open'] and body > 0 and lw >= body * 1.5: signs.append("下ヒゲ陽線")
+    lower_wick = min(latest['Close'], latest['Open']) - latest['Low']
+    if latest['Close'] > latest['Open'] and body > 0 and lower_wick >= body * 1.5: signs.append("下ヒゲ陽線")
     if prev['Close'] < prev['Open'] and latest['Close'] > latest['Open'] and latest['Close'] > prev['Open'] and latest['Open'] < prev['Close']: signs.append("包み足")
-    if prev['Close'] < prev['Open'] and latest['Close'] > latest['Open'] and "包み足" not in signs: signs.append("陽線転換")
-    if body > 0 and lw >= body * 2.0 and "下ヒゲ陽線" not in signs: signs.append("長い下ヒゲ")
+    if prev['Close'] < prev['Open'] and latest['Close'] > latest['Open']:
+        if "包み足" not in signs: signs.append("陽線転換")
+    if body > 0 and lower_wick >= body * 2.0 and "下ヒゲ陽線" not in signs: signs.append("長い下ヒゲ")
     return signs
 
 def check_ma25_slope(hist, window=5):
     ma25 = hist['Close'].rolling(25).mean()
-    return (ma25.iloc[-1] - ma25.iloc[-(window+1)]) > 0 if len(ma25.dropna()) >= window + 1 else False
+    if len(ma25.dropna()) < window + 1: return False
+    return (ma25.iloc[-1] - ma25.iloc[-(window+1)]) > 0
 
-# ================================================================
-# 上位足フィルター
-# ================================================================
-def check_monthly_filter(tk):
-    try:
-        m = tk.history(period="2y", interval="1mo")
-        if len(m) < 3: return True, "月足データ不足"
-        for t, p, l in [(m.iloc[-2], m.iloc[-3], "前月"), (m.iloc[-1], m.iloc[-2], "当月")]:
-            b, uw, is_b = abs(t['Close']-t['Open']), t['High']-max(t['Close'], t['Open']), t['Close']<t['Open']
-            if is_b and b > 0 and uw >= b * 1.5: return False, f"月足上ヒゲ陰線⛔({l})"
-            if b > 0 and uw >= b * 2.0: return False, f"月足長い上ヒゲ⛔({l})"
-            if is_b and abs(p['Close']-p['Open']) > 0 and b >= abs(p['Close']-p['Open']) * 2.0: return False, f"月足大陰線⛔({l})"
-        return True, "月足小陰線✅" if m.iloc[-1]['Close'] < m.iloc[-1]['Open'] else "月足陽線✅"
-    except: return True, "月足取得エラー"
-
-def check_weekly_filter(tk):
-    try:
-        w = tk.history(period="2y", interval="1wk")
-        if len(w) < 10: return True, "週足データ不足"
-        w['MA25w'] = w['Close'].rolling(25).mean()
-        latest, ma_now, ma_prev = w.iloc[-1], w['MA25w'].iloc[-1], w['MA25w'].iloc[-6]
-        b, uw, is_b = abs(latest['Close']-latest['Open']), latest['High']-max(latest['Close'], latest['Open']), latest['Close']<latest['Open']
-        if is_b and b > 0 and uw >= b * 1.5: return False, "週足上ヒゲ陰線⛔"
-        if ma_now < ma_prev and latest['Close'] < ma_now: return False, "週足下落転換⛔"
-        return True, "週足25週線上向き✅" if ma_now >= ma_prev else "週足小陰線（許容）✅"
-    except: return True, "週足取得エラー"
-
-# ================================================================
-# バックテスト
-# ================================================================
 def backtest(hist, stop_pct, target_pct, rsi_min, rsi_max, vol_mult):
-    h = hist.copy().reset_index()
-    trades, in_trade, ep = [], False, 0.0
-    for i in range(201, len(h) - 1):
-        r = h.iloc[i]
+    hist = hist.copy().reset_index()
+    trades, in_trade, entry_price = [], False, 0.0
+    for i in range(201, len(hist) - 1):
+        r = hist.iloc[i]
         if pd.isna(r['MA200']) or pd.isna(r['RSI']) or pd.isna(r['MA25']): continue
-        m25_5 = h.iloc[i - 5]['MA25'] if i >= 5 else None
-        m_up = m25_5 and r['MA25'] > m25_5
+        m25_5ago = hist.iloc[i - 5]['MA25'] if i >= 5 else None
+        m25_slope_up = (m25_5ago is not None) and (not pd.isna(m25_5ago)) and (r['MA25'] > m25_5ago)
         b_cnt = 0
         for j in range(1, 5):
-            if i >= j and h.iloc[i - j + 1]['Close'] < h.iloc[i - j + 1]['Open']: b_cnt += 1
+            if i >= j and hist.iloc[i - j + 1]['Close'] < hist.iloc[i - j + 1]['Open']: b_cnt += 1
             else: break
+        vol_calm = r['VolRatio'] < vol_mult
         if not in_trade:
-            if r['Close'] > r['MA200'] and m_up and r['Close'] <= r['BB_mid'] and rsi_min <= r['RSI'] <= rsi_max and b_cnt >= 2 and r['VolRatio'] < vol_mult and r['Close'] <= r['MA25'] * 1.03:
-                ep, in_trade = h.iloc[i + 1]['Open'], True
+            if (r['Close'] > r['MA200'] and m25_slope_up and r['Close'] <= r['BB_mid'] and rsi_min <= r['RSI'] <= rsi_max and b_cnt >= 2 and vol_calm and r['Close'] <= r['MA25'] * 1.03):
+                entry_price = hist.iloc[i + 1]['Open']
+                in_trade = True
         else:
-            exp = None
-            if r['Low'] <= ep * (1 - stop_pct / 100): exp = ep * (1 - stop_pct / 100)
-            elif r['High'] >= max(ep * (1 + target_pct / 100), float(r['BB_mid'])): exp = max(ep * (1 + target_pct / 100), float(r['BB_mid']))
-            if exp:
-                trades.append((exp - ep) / ep * 100)
+            exit_price = None
+            if r['Low'] <= entry_price * (1 - stop_pct / 100): exit_price = entry_price * (1 - stop_pct / 100)
+            elif r['High'] >= max(entry_price * (1 + target_pct / 100), float(r['BB_mid'])): exit_price = max(entry_price * (1 + target_pct / 100), float(r['BB_mid']))
+            if exit_price:
+                trades.append((exit_price - entry_price) / entry_price * 100)
                 in_trade = False
     if not trades: return None
     arr = np.array(trades)
-    return {"取引回数": len(arr), "勝率": f"{(arr > 0).sum() / len(arr) * 100:.1f}%", "平均損益": f"{arr.mean():.2f}%", "最大DD": f"{(np.cumsum(arr) - np.maximum.accumulate(np.cumsum(arr))).min():.2f}%"}
+    wins = arr[arr > 0]
+    return {"取引回数": len(arr), "勝率": f"{len(wins) / len(arr) * 100:.1f}%", "平均損益": f"{arr.mean():.2f}%", "最大DD": f"{(np.cumsum(arr) - np.maximum.accumulate(np.cumsum(arr))).min():.2f}%"}
 
-# ================================================================
-# ★ 買いスキャン解析 (タッチ・日付判定バグ完全修正)
-# ================================================================
 def analyze_stock(ticker_code, company_name, stop_pct, target_pct, rsi_min, rsi_max, ma200_range, vol_mult):
     import time
+    last_err = ""
     try:
         hist = pd.DataFrame()
         tk = None
@@ -183,91 +180,160 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, rsi_min, rsi_
                 tk = yf.Ticker(f"{ticker_code}.T")
                 hist = tk.history(period="2y", timeout=10)
                 if len(hist) > 0: break
-            except: time.sleep(1)
-        if len(hist) < 200: return {"_error": f"{ticker_code}: データ取得失敗"}
-        
+            except Exception as e:
+                last_err = str(e)
+                time.sleep(1)
+        if len(hist) < 200: return {"_error": f"{ticker_code}: データ取得失敗 {last_err[:50]}"}
+        if len(hist) < 210: return None
+
         hist['MA200'] = hist['Close'].rolling(200).mean()
         hist['MA25'] = hist['Close'].rolling(25).mean()
         macd, sig = calculate_macd(hist)
         hist['MACD'], hist['Signal'] = macd, sig
-        hist['BB_upper'], hist['BB_mid'], hist['BB_lower'] = calculate_bb(hist)
+        bb_up, bb_mid, bb_lo = calculate_bb(hist)
+        hist['BB_upper'], hist['BB_mid'], hist['BB_lower'] = bb_up, bb_mid, bb_lo
         hist['RSI'] = calculate_rsi(hist)
         hist['VolMA5'] = hist['Volume'].rolling(5).mean()
         hist['VolRatio'] = hist['Volume'] / hist['VolMA5']
 
         latest = hist.iloc[-1]
-        cp, m200, m25, rsi, m_val, s_val, vr = float(latest['Close']), float(latest['MA200']), float(latest['MA25']), float(latest['RSI']), float(latest['MACD']), float(latest['Signal']), float(latest['VolRatio'])
-        b_up, b_md, b_lo = float(latest['BB_upper']), float(latest['BB_mid']), float(latest['BB_lower'])
+        cp, m200, m25, rsi = float(latest['Close']), float(latest['MA200']), float(latest['MA25']), float(latest['RSI'])
+        macd_val, sig_val, vr = float(latest['MACD']), float(latest['Signal']), float(latest['VolRatio'])
+        b_up_val, b_mid_val, b_lo_val = float(latest['BB_upper']), float(latest['BB_mid']), float(latest['BB_lower'])
 
         if pd.isna(m200) or pd.isna(m25): return None
         d_200, d_25 = (cp - m200) / m200 * 100, (cp - m25) / m25 * 100
-        b_pos = ((cp - b_lo) / (b_up - b_lo) * 100) if (b_up - b_lo) > 0 else 50.0
+        bb_range = b_up_val - b_lo_val
+        bb_pos = ((cp - b_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
-        # 【修正】当日を0日前として過去5日間を逆引きスキャン(SBI整合処理撤廃・厳密化)
-        bb_touched, b_days = False, -1
-        for d_idx in range(6):
-            if len(hist) > d_idx:
-                row = hist.iloc[-(d_idx + 1)]
-                if float(row['Low']) <= float(row['BB_lower']) or float(row['Close']) <= float(row['BB_lower']):
-                    bb_touched, b_days = True, d_idx
+        bb_touched_lower = False
+        bb_touch_days_ago = -1
+        for day_idx in range(6):
+            if len(hist) > day_idx:
+                _row = hist.iloc[-(day_idx + 1)]
+                _bb_lo = float(_row['BB_lower'])
+                _low = float(_row['Low'])
+                _close = float(_row['Close'])
+                if _low <= _bb_lo or _close <= _bb_lo:
+                    bb_touched_lower = True
+                    bb_touch_days_ago = day_idx
                     break
 
-        m25_up = check_ma25_slope(hist)
+        m25_slope = check_ma25_slope(hist)
         is_b_cont, b_cnt = check_consecutive_bearish(hist, n=2)
         rev_signs = check_reversal_sign(hist)
-        
-        monthly_ok, monthly_label = check_monthly_filter(tk)
-        weekly_ok, weekly_label = check_weekly_filter(tk)
+        vol_calm = vr < vol_mult
+        monthly_ok, m_label = check_monthly_filter(tk)
+        weekly_ok, w_label = check_weekly_filter(tk)
+
+        rsi_improving = False
+        rsi_series = hist['RSI'].dropna()
+        if len(rsi_series) >= 4:
+            r3, r2, r1, r0 = float(rsi_series.iloc[-4]), float(rsi_series.iloc[-3]), float(rsi_series.iloc[-2]), float(rsi_series.iloc[-1])
+            if (r2 <= r3 and r1 <= r2 and r0 > r1) or (r1 <= r2 and r0 > r1): rsi_improving = True
+
+        macd_narrowing = abs(macd_val - sig_val) < abs(float(hist.iloc[-2]['MACD']) - float(hist.iloc[-2]['Signal']))
+        macd_gc_recent = False
+        for _i in range(1, 4):
+            if len(hist) > _i:
+                _p, _c = hist.iloc[-(_i+1)], hist.iloc[-_i]
+                if float(_p['MACD']) < float(_p['Signal']) and float(_c['MACD']) >= float(_c['Signal']):
+                    macd_gc_recent = True
+                    break
 
         score, reasons, warnings = 0, [], []
         if cp > m200: score += 2; reasons.append(f"200日線上(+{d_200:.1f}%)")
         else: warnings.append("200日線下⚠️")
-        if m25_up: score += 2; reasons.append("25日線上向き")
+        if m25_slope: score += 2; reasons.append("25日線上向き")
         else: warnings.append("25日線下向き")
 
-        # スコア処理修正
-        if bb_touched and b_pos <= 80:
-            if b_days == 0: score += 3; reasons.append(f"今日BB下限タッチ({b_pos:.0f}%)")
-            elif 1 <= b_days <= 2: score += 3; reasons.append(f"BB下限タッチ翌{b_days}日目({b_pos:.0f}%)")
-            elif b_days == 3: score += 2; reasons.append(f"BB下限タッチ{b_days}日後({b_pos:.0f}%)")
-            else: score += 1; reasons.append(f"BB下限タッチ{b_days}日後({b_pos:.0f}%)")
-        elif b_pos <= 25: score += 2; reasons.append(f"BB下限付近({b_pos:.0f}%)")
-        elif b_pos <= 50: score += 1; reasons.append(f"BBセンター以下({b_pos:.0f}%)")
+        if bb_touched_lower and bb_pos <= 80:
+            if bb_touch_days_ago == 0: score += 3; reasons.append(f"今日BB下限タッチ({bb_pos:.0f}%)")
+            elif 1 <= bb_touch_days_ago <= 2: score += 3; reasons.append(f"BB下限タッチ翌{bb_touch_days_ago}日目({bb_pos:.0f}%)")
+            elif bb_touch_days_ago == 3: score += 2; reasons.append(f"BB下限タッチ{bb_touch_days_ago}日後({bb_pos:.0f}%)")
+            else: score += 1; reasons.append(f"BB下限タッチ{bb_touch_days_ago}日後({bb_pos:.0f}%) 乗り遅れ気味")
+        elif bb_pos <= 25: score += 2; reasons.append(f"BB下限付近({bb_pos:.0f}%)")
+        elif bb_pos <= 50: score += 1; reasons.append(f"BBセンター以下({bb_pos:.0f}%)")
+        else: warnings.append(f"BB上部({bb_pos:.0f}%)")
 
-        if rsi_min <= rsi <= rsi_max: score += 1; reasons.append(f"RSI適正({rsi:.0f})")
-        if vr < vol_mult: score += 1; reasons.append(f"出来高落ち着き({vr:.1f}x)")
+        if rsi_min <= rsi <= rsi_max:
+            score += 1; reasons.append(f"RSI適正({rsi:.0f})")
+            if rsi_improving: score += 1; reasons.append("RSI底打ち反転")
+        elif rsi < rsi_min: warnings.append(f"RSI過売({rsi:.0f})")
+        else: warnings.append(f"RSI過熱({rsi:.0f})")
+
+        if is_b_cont: score += 1; reasons.append(f"陰線{b_cnt}日続き")
+        if vol_calm: score += 1; reasons.append(f"出来高落ち着き({vr:.1f}x)")
         else: warnings.append(f"出来高急増({vr:.1f}x)⚠️")
-        
-        r_score = 3 if "下ヒゲ陽線" in rev_signs else 2 if "包み足" in rev_signs else 1 if len(rev_signs)>0 else 0
-        if r_score > 0: score += r_score; reasons.append(f"サイン:{rev_signs[0]}")
+        if abs(d_25) <= 5.0: score += 1; reasons.append(f"25日線付近({d_25:+.1f}%)")
 
-        # ステータス振り分け
-        if not (cp > m200 and m25_up): status = "⛔ 除外（弱い銘柄）"
-        elif not monthly_ok: status = f"⛔ 除外（{monthly_label}）"
-        elif not weekly_ok: status = f"⛔ 除外（{weekly_label}）"
-        elif b_pos > 80: status = "⛔ 除外（BB上部/過熱）"
-        elif not bb_touched: status = "👀 監視（BB下限未タッチ）"
-        elif bb_touched and len(rev_signs) == 0 and b_days == 0: status = "⏳ 様子見（反発サイン待ち）"
+        rev_score = 3 if "下ヒゲ陽線" in rev_signs else 2 if "包み足" in rev_signs else 1 if len(rev_signs)>0 else 0
+        if rev_score > 0:
+            score += rev_score
+            label = rev_signs[0] if rev_signs else ""
+            if rev_score == 3: reasons.append(f"🔥 {label}（最強反発）")
+            elif rev_score == 2: reasons.append(f"⚡ {label}（強い反発）")
+            else: reasons.append(f"↑ {label}（反発予兆）")
+
+        if macd_gc_recent: score = min(score + 1, 13); reasons.append("MACD-GC直近")
+        elif macd_narrowing and macd_val < sig_val: score = min(score + 1, 13); reasons.append("MACD収束中")
+
+        if bb_pos > 80: score = max(score - 3, 0); warnings.append(f"BB上部({bb_pos:.0f}%) 押し目未形成⛔")
+        if bb_touched_lower and bb_pos > 80: score = max(score - 2, 0); warnings.append(f"BB下限タッチ後に急騰⛔ 乗り遅れ(BB{bb_pos:.0f}%)")
+        if rsi > rsi_max: warnings.append(f"RSI過熱({rsi:.0f}) 押し目未形成⛔")
+
+        must_ok = (cp > m200) and m25_slope
+        if not must_ok: status = "⛔ 除外（弱い銘柄）"
+        elif not monthly_ok: status = f"⛔ 除外（{m_label}）"
+        elif not weekly_ok: status = f"⛔ 除外（{w_label}）"
+        elif bb_pos > 80: status = "⛔ 除外（BB上部/過熱）"
+        elif not bb_touched_lower: status = "👀 監視（BB下限未タッチ）"
+        elif bb_touched_lower and not rev_signs and bb_touch_days_ago == 0: status = "⏳ 様子見（反発サイン待ち）"
+        elif bb_touch_days_ago > 3 and bb_pos > 50: status = "⏳ 様子見（反発乗り遅れ）"
+        elif rsi > rsi_max: status = "⏳ 様子見（RSI過熱冷め待ち）"
         elif score >= 8: status = "🔥 買い候補"
-        else: status = "⏳ 様子見"
+        elif score >= 6: status = "👀 監視（押し目形成中）"
+        elif score >= 4: status = "⏳ 様子見"
+        else: status = "➖ 対象外"
+
+        stop_p = round(cp * (1 - stop_pct / 100), 1)
+        tgt_p = round(max(cp * (1 + target_pct / 100), b_mid_val), 1)
+        rr = round((tgt_p - cp) / (cp - stop_p), 1) if cp > stop_p else 0.0
+
+        if macd_gc_recent: m_label_txt = "🟢 GC直近"
+        elif macd_narrowing and macd_val < sig_val: m_label_txt = "🟡 収束中"
+        elif macd_val > sig_val: m_label_txt = "↑上"
+        else: m_label_txt = "↓下"
 
         bt = backtest(hist, stop_pct, target_pct, rsi_min, rsi_max, vol_mult)
+        try:
+            info = tk.info
+            div_yield = info.get('dividendYield') or 0
+            per = info.get('forwardPE', '-')
+        except: div_yield, per = 0, '-'
+
+        e_date = "未発表"
+        try:
+            cal = tk.calendar
+            if isinstance(cal, pd.DataFrame) and not cal.empty:
+                d = cal.loc['Earnings Date'].iloc[0] if 'Earnings Date' in cal.index else cal.iloc[0, 0]
+                e_date = d.strftime('%Y/%m/%d')
+        except: pass
+
         return {
             "コード": ticker_code, "会社名": company_name, "判定": status, "スコア": score, "現在値": round(cp, 1),
-            "月足": monthly_label, "週足": weekly_label, "200日乖離": f"{d_200:+.2f}%", "25日乖離": f"{d_25:+.2f}%", "RSI(14)": round(rsi, 1),
-            "MACD": "↑上" if m_val > s_val else "↓下", "BB位置": f"{b_pos:.0f}%" + (f"(↑{b_days}日前タッチ)" if bb_touched else ""),
+            "月足": m_label, "週足": w_label, "200日乖離": f"{d_200:+.2f}%", "25日乖離": f"{d_25:+.2f}%", "RSI(14)": round(rsi, 1),
+            "MACD": m_label_txt, "BB位置": f"{bb_pos:.0f}%" + (f"(↑{bb_touch_days_ago}日前下限タッチ)" if bb_touched_lower else ""),
             "出来高倍率": f"{vr:.1f}x", "陰線日数": b_cnt, "反発サイン": " / ".join(rev_signs) if rev_signs else "-",
-            "損切り価格": round(cp * (1 - stop_pct / 100), 1), "利確目標": round(max(cp * (1 + target_pct / 100), b_md), 1), "RRレシオ": f"1:{round((max(cp * (1 + target_pct / 100), b_md) - cp) / (cp - cp * (1 - stop_pct / 100)), 1)}",
-            "根拠": " / ".join(reasons) if reasons else "-", "注意点": " / ".join(warnings) if warnings else "-",
+            "損切り価格": stop_p, "利確目標": tgt_p, "RRレシオ": f"1:{rr}", "配当利回り": f"{div_yield * 100:.2f}%",
+            "次期決算": e_date, "PER": per, "根拠": " / ".join(reasons) if reasons else "-", "注意点": " / ".join(warnings) if warnings else "-",
             "チャート": f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}",
             "BT勝率": bt["勝率"] if bt else "-", "BT平均損益": bt["平均損益"] if bt else "-", "BT取引数": bt["取引回数"] if bt else 0, "BT最大DD": bt["最大DD"] if bt else "-"
         }
     except: return None
 
-# ================================================================
-# 空売り解析関数
-# ================================================================
 def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change, credit_sell_buy_ratio, stop_pct=4, target_pct=8, rsi_short_min=40, rsi_short_max=60):
+    import time
     try:
         hist = pd.DataFrame()
         for attempt in range(3):
@@ -275,88 +341,475 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change, c
                 tk = yf.Ticker(f"{ticker_code}.T")
                 hist = tk.history(period="2y", timeout=10)
                 if len(hist) > 0: break
-            except: import time; time.sleep(1)
+            except: time.sleep(1)
         if len(hist) < 200: return None
+
         hist['MA200'] = hist['Close'].rolling(200).mean()
         hist['MA25'] = hist['Close'].rolling(25).mean()
         hist['MA75'] = hist['Close'].rolling(75).mean()
         hist['BB_upper'], hist['BB_mid'], hist['BB_lower'] = calculate_bb(hist)
         hist['RSI'] = calculate_rsi(hist)
-        latest = hist.iloc[-1]
+        hist['MACD'], hist['Signal'] = calculate_macd(hist)
+        hist['VolMA5'] = hist['Volume'].rolling(5).mean()
+        hist['VolRatio'] = hist['Volume'] / hist['VolMA5']
+
+        latest, prev = hist.iloc[-1], hist.iloc[-2]
         cp, m200, m25, m75, rsi = float(latest['Close']), float(latest['MA200']), float(latest['MA25']), float(latest['MA75']) if not pd.isna(latest['MA75']) else float(latest['MA200']), float(latest['RSI'])
-        b_up, b_lo = float(latest['BB_upper']), float(latest['BB_lower'])
-        
+        macd_val, sig_val, vr = float(latest['MACD']), float(latest['Signal']), float(latest['VolRatio'])
+        b_up, b_mid, b_lo = float(latest['BB_upper']), float(latest['BB_mid']), float(latest['BB_lower'])
+
         if pd.isna(m200) or pd.isna(m25): return None
         d_200, d_25 = (cp - m200) / m200 * 100, (cp - m25) / m25 * 100
         b_pos = ((cp - b_lo) / (b_up - b_lo) * 100) if (b_up - b_lo) > 0 else 50.0
 
-        score, reasons, warnings = 0, [], []
-        if d_200 <= -10: score += 2; reasons.append("200日線下落トレンド")
-        if m25 < m75 < m200: score += 2; reasons.append("完全下落配列")
-        if rsi_short_min <= rsi <= rsi_short_max: score += 2; reasons.append("RSI戻り一服")
-        
-        cr = float(str(credit_ratio).replace(',', '')) if pd.notna(credit_ratio) else np.nan
-        if not np.isnan(cr) and cr >= 2: score += 2; reasons.append(f"信用倍率高({cr:.1f})")
+        m200_5ago = float(hist['MA200'].dropna().iloc[-6]) if len(hist['MA200'].dropna()) >= 6 else m200
+        m25_5ago = float(hist['MA25'].dropna().iloc[-6]) if len(hist['MA25'].dropna()) >= 6 else m25
+        m200_slope_down = m200 < m200_5ago
+        m25_slope_down = m25 < m25_5ago
 
-        status = "🔻 空売り候補" if (d_200 < 0 and score >= 5) else "➖ 対象外"
+        bullish_count = 0
+        for _j in range(1, 6):
+            if len(hist) > _j and hist.iloc[-_j]['Close'] >= hist.iloc[-_j]['Open']: bullish_count += 1
+            else: break
+
+        top_signs = []
+        body = abs(latest['Close'] - latest['Open'])
+        upper_wick = latest['High'] - max(latest['Close'], latest['Open'])
+
+        if latest['Close'] < latest['Open'] and body > 0 and upper_wick >= body * 1.5: top_signs.append("上ヒゲ陰線")
+        if prev['Close'] >= prev['Open'] and latest['Open'] > prev['Close'] and latest['Close'] < prev['Open']: top_signs.append("被せ線")
+        elif prev['Close'] >= prev['Open'] and latest['Close'] < latest['Open']:
+            if "上ヒゲ陰線" not in top_signs: top_signs.append("陰線転換")
+        if body > 0 and upper_wick >= body * 2.0 and "上ヒゲ陰線" not in top_signs: top_signs.append("長い上ヒゲ")
+
+        macd_dc_recent = False
+        for _i in range(1, 4):
+            if len(hist) > _i:
+                _p, _c = hist.iloc[-(_i+1)], hist.iloc[-_i]
+                if float(_p['MACD']) > float(_p['Signal']) and float(_c['MACD']) <= float(_c['Signal']):
+                    macd_dc_recent = True
+                    break
+
+        score, reasons, warnings = 0, [], []
+        def safe_float(val):
+            try: return float(str(val).replace(',', ''))
+            except: return np.nan
+
+        if d_200 <= -20: score += 4; reasons.append(f"200日線大幅下乖離({d_200:.1f}%)")
+        elif d_200 <= -15: score += 3; reasons.append(f"200日線下乖離({d_200:.1f}%)")
+        elif d_200 <= -10: score += 2; reasons.append(f"200日線下({d_200:.1f}%)")
+        elif d_200 <= -5: score += 1; reasons.append(f"200日線やや下({d_200:.1f}%)")
+        elif d_200 > 0: warnings.append(f"200日線上⚠️ (+{d_200:.1f}%)")
+
+        if m200_slope_down: score += 1; reasons.append("200日線下向き継続")
+        if m25_slope_down: score += 1; reasons.append("25日線下向き")
+        if m25 < m75 < m200: score += 2; reasons.append("完全下落配列(25<75<200)")
+        elif m25 < m200: score += 1; reasons.append("25日線<200日線")
+
+        if rsi_short_min <= rsi <= rsi_short_max: score += 2; reasons.append(f"RSI戻り一服({rsi:.0f})")
+        elif rsi > rsi_short_max: score += 1; reasons.append(f"RSI高め({rsi:.0f}) 戻り過ぎ注意"); warnings.append(f"RSI過熱({rsi:.0f}) 反発リスク")
+        elif rsi < 30: warnings.append(f"RSI売られすぎ({rsi:.0f}) 一時反発注意")
+        else: score += 1; reasons.append(f"RSI({rsi:.0f})")
+
+        cr = safe_float(credit_ratio)
+        if not np.isnan(cr):
+            if cr >= 10: score += 3; reasons.append(f"信用倍率{cr:.1f}(買い残過多・空売り超有利)")
+            elif cr >= 5: score += 2; reasons.append(f"信用倍率{cr:.1f}(買い残多め・空売り有利)")
+            elif cr >= 2: score += 1; reasons.append(f"信用倍率{cr:.1f}")
+            elif cr <= 1.0: warnings.append(f"信用倍率{cr:.2f}(売り残多め・踏み上げ注意⚠️)")
+
+        sc_val = safe_float(credit_sell_change)
+        if not np.isnan(sc_val):
+            if sc_val > 0: score += 1; reasons.append(f"売り残増加(+{sc_val:,.0f}株)")
+            elif sc_val < -10000: warnings.append(f"売り残大幅減少({sc_val:,.0f}株)⚠️")
+
+        top_score = 3 if "被せ線" in top_signs else 2 if "上ヒゲ陰線" in top_signs else 1 if ("陰線転換" in top_signs or "長い上ヒゲ" in top_signs) else 0
+        if top_score > 0:
+            score += top_score
+            label = top_signs[0]
+            if top_score == 3: reasons.append(f"🔻{label}（最強失速）")
+            elif top_score == 2: reasons.append(f"⬇️{label}（失速サイン）")
+            else: reasons.append(f"↓{label}（失速予兆）")
+
+        if macd_dc_recent: score = min(score + 1, 15); reasons.append("MACD-DC直近")
+        elif macd_val < sig_val: score = min(score + 1, 15); reasons.append("MACD下方向")
+
+        if d_200 >= 0: status = "⛔ 除外（200日線上・買いスキャン対象）"
+        elif score >= 9: status = "🔻 空売り候補"
+        elif score >= 7: status = "👀 監視（下落トレンド継続）"
+        elif score >= 5: status = "⏳ 様子見"
+        else: status = "➖ 対象外"
+
+        stop_p = round(cp * (1 + stop_pct / 100), 1)
+        tgt_p = round(cp * (1 - target_pct / 100), 1)
+        rr = round((cp - tgt_p) / (stop_p - cp), 1) if stop_p > cp else 0.0
+
+        if macd_dc_recent: m_label_txt = "🔴 DC直近"
+        elif macd_val < sig_val: m_label_txt = "↓下"
+        else: m_label_txt = "↑上"
+
         return {
             "コード": ticker_code, "会社名": company_name, "判定": status, "スコア": score, "現在値": round(cp, 1),
-            "200日乖離": f"{d_200:+.2f}%", "25日乖離": f"{d_25:+.2f}%", "MA配列": f"25:{m25:.0f}/75:{m75:.0f}/200:{m200:.0f}",
-            "RSI(14)": round(rsi, 1), "BB位置": f"{b_pos:.0f}%", "信用倍率": f"{cr:.2f}" if not np.isnan(cr) else "-",
-            "損切り価格": round(cp * (1 + stop_pct / 100), 1), "利確目標": round(cp * (1 - target_pct / 100), 1),
-            "根拠": " / ".join(reasons) if reasons else "-", "注意点": " / ".join(warnings) if warnings else "-",
-            "チャート": f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}"
+            "200日乖離": f"{d_200:+.2f}%", "25日乖離": f"{d_25:+.2f}%", "MA配列": f"25:{m25:.0f} / 75:{m75:.0f} / 200:{m200:.0f}",
+            "RSI(14)": round(rsi, 1), "MACD": m_label_txt, "BB位置": f"{b_pos:.0f}%", "出来高倍率": f"{vr:.1f}x",
+            "陽線日数": bullish_count, "失速サイン": " / ".join(top_signs) if top_signs else "-",
+            "信用倍率": f"{cr:.2f}" if not np.isnan(cr) else "-", "売り残前週比": f"{sc_val:+,.0f}株" if not np.isnan(sc_val) else "-",
+            "損切り価格": stop_p, "利確目標": tgt_p, "RRレシオ": f"1:{rr}",
+            "チャート": f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}",
+            "根拠": " / ".join(reasons) if reasons else "-", "注意点": " / ".join(warnings) if warnings else "-"
         }
     except: return None
 
-# ================================================================
-# 流動的なUI表示部 (タブ実装)
-# ================================================================
+tab_buy, tab_short, tab_ai = st.tabs(["📈 買いスキャン", "🔻 空売りスキャン", "📰 AIニュース分析"])
+
 with tab_buy:
     st.subheader("📊 銘柄一括スキャン（押し目買い）")
     files = st.file_uploader("SBIのCSVをアップロード（複数可）", type=['csv'], accept_multiple_files=True, key="buy_csv")
     if files:
-        dfs = [pd.read_csv(f, encoding='shift-jis' if 'shift-jis' else 'utf-8') for f in files]
+        dfs = []
+        for file in files:
+            file.seek(0)
+            try: dfs.append(pd.read_csv(file, encoding='shift-jis'))
+            except: file.seek(0); dfs.append(pd.read_csv(file, encoding='utf-8'))
         df = pd.concat(dfs, ignore_index=True).drop_duplicates()
-        c_col = [c for c in df.columns if 'コード' in c or c.strip() == '銘柄']
-        n_col = [c for c in df.columns if '銘柄名' in c or '会社名' in c or c.strip() == '銘柄.1']
-        
-        if c_col and n_col:
+        st.caption(f"📂 {len(files)}ファイル合計 {len(df)}銘柄を読み込みました")
+
+        c_col = [c for c in df.columns if 'コード' in c] or [c for c in df.columns if c.strip() == '銘柄']
+        n_col = [c for c in df.columns if '銘柄名' in c] or [c for c in df.columns if '会社名' in c] or [c for c in df.columns if c.strip() == '銘柄.1']
+
+        if not c_col or not n_col:
+            st.error(f"⚠️ CSVに「コード」「銘柄名」列が見つかりません。検出された列: {list(df.columns)}")
+        else:
             t_list = df[[c_col[0], n_col[0]]].dropna()
-            if st.button(f"🚀 {len(t_list)}銘柄を一括解析実行"):
-                results = []
-                bar = st.progress(0)
-                for i, (_, row) in enumerate(t_list.iterrows()):
-                    res = analyze_stock(str(row[c_col[0]]), str(row[n_col[0]]), stop_pct, target_pct, rsi_min, rsi_max, ma200_range, vol_mult)
-                    if res and '_error' not in res: results.append(res)
+            if st.button(f"🚀 {len(t_list)}銘柄を一括解析（バックテスト込み）"):
+                results, errors = [], []
+                bar, status_txt, err_txt = st.progress(0), st.empty(), st.empty()
+                for i, (idx, row) in enumerate(t_list.iterrows()):
+                    code, name = str(row[c_col[0]]), str(row[n_col[0]])
+                    status_txt.text(f"解析中... {code} {name} ({i+1}/{len(t_list)}) ✅{len(results)}件 ❌{len(errors)}件")
+                    res = analyze_stock(code, name, stop_pct, target_pct, rsi_min, rsi_max, ma200_range, vol_mult)
+                    if res and '_error' in res:
+                        errors.append(res['_error'])
+                        if len(errors) <= 3: err_txt.warning(f"⚠️ 直近エラー: {res['_error']}")
+                    elif res: results.append(res)
                     bar.progress((i + 1) / len(t_list))
+                status_txt.text(f"✅ 完了！ 成功:{len(results)}件 / 失敗:{len(errors)}件")
+
+                if errors:
+                    with st.expander(f"❌ 取得失敗 {len(errors)}件"):
+                        for e in errors[:20]: st.text(e)
+
                 if results:
-                    st.session_state.analysis_results = pd.DataFrame(results)
-                    save_results(st.session_state.analysis_results)
-                    st.success("スキャン結果を保存しました。")
+                    good = [r for r in results if '判定' in r]
+                    df_good = pd.DataFrame(good) if good else None
+                    st.session_state.analysis_results = df_good
+                    if df_good is not None:
+                        save_results(df_good)
+                        st.session_state.saved_at = datetime.now().strftime('%Y/%m/%d %H:%M')
+                        mobile_data = {
+                            'updated': st.session_state.saved_at,
+                            'buy': [r for r in good if r.get('判定') == '🔥 買い候補'],
+                            'watch': [r for r in good if r.get('判定') == '👀 監視（押し目形成中）'],
+                            'total': len(good),
+                        }
+                        os.makedirs('data', exist_ok=True)
+                        with open('data/scan_result.json', 'w', encoding='utf-8') as f:
+                            json.dump(mobile_data, f, ensure_ascii=False, indent=2)
+                        st.success(f"✅ {len(good)}銘柄を保存しました")
 
     if st.session_state.analysis_results is not None:
         res_df = st.session_state.analysis_results
-        st.header("🔥 【厳選】押し目買い候補")
-        buy_only = res_df[res_df['判定'] == "🔥 買い候補"]
-        st.dataframe(buy_only, use_container_width=True)
-        
-        with st.expander("📋 その他（監視・様子見を含む全銘柄一覧）"):
-            st.dataframe(res_df, use_container_width=True)
+        if res_df.empty or '判定' not in res_df.columns:
+            st.warning("⚠️ 表示できる解析結果がありません。")
+        else:
+            if st.session_state.get('saved_at', ''): st.info(f"📂 {st.session_state.saved_at} スキャン結果")
+            st.markdown("---")
+            st.header("🔥 【厳選】押し目買い候補")
+            buy_only = res_df[res_df['判定'] == "🔥 買い候補"].copy()
+
+            def parse_pct(x):
+                try: return float(str(x).replace('%', ''))
+                except: return 0.0
+
+            if not buy_only.empty:
+                buy_only['_win'] = buy_only['BT勝率'].apply(parse_pct)
+                buy_only = buy_only.sort_values(['_win', 'スコア'], ascending=False).drop(columns=['_win'])
+                buy_display = buy_only.copy()
+                for c in ['200日乖離', '25日乖離', 'BT勝率', 'BT平均損益', 'BT最大DD']:
+                    if c in buy_display.columns: buy_display[c] = buy_display[c].apply(lambda x: float(str(x).replace('%','').replace('+','')) if x != '-' else 0.0)
+
+                if '反発サイン' in buy_display.columns and '陰線日数' in buy_display.columns:
+                    buy_display['根拠'] = buy_display.apply(
+                        lambda r: ((f"{'🔥' if '下ヒゲ陽線' in str(r['反発サイン']) else '⚡' if '包み足' in str(r['反発サイン']) else '↑'}{r['反発サイン']} " if str(r['反発サイン']) not in ['-',''] else '') +
+                                   (f"陰{r['陰線日数']}日 " if str(r['陰線日数']) not in ['-','0',''] else '') + str(r.get('根拠','')))[:40], axis=1)
+                if 'チャート' in buy_display.columns: buy_display['📊'] = buy_display['チャート']
+
+                display_cols = ["コード", "会社名", "スコア", "現在値", "月足", "週足", "200日乖離", "25日乖離", "RSI(14)", "MACD", "BB位置", "出来高倍率", "損切り価格", "利確目標", "RRレシオ", "根拠", "注意点", "BT勝率", "BT平均損益", "BT最大DD", "📊"]
+                disp = [c for c in display_cols if c in buy_display.columns]
+                st.dataframe(buy_display[disp], use_container_width=True, height=400,
+                             column_config={
+                                 "📊": st.column_config.LinkColumn("📊", display_text="📊"),
+                                 "損切り価格": st.column_config.NumberColumn("損切💀", format="%.0f"),
+                                 "利確目標": st.column_config.NumberColumn("利確🎯", format="%.0f"),
+                                 "スコア": st.column_config.ProgressColumn("スコア", min_value=0, max_value=13),
+                                 "200日乖離": st.column_config.NumberColumn("200日%", format="%.1f"),
+                                 "25日乖離": st.column_config.NumberColumn("25日%", format="%.1f"),
+                                 "BT勝率": st.column_config.NumberColumn("BT勝率", format="%.0f"),
+                                 "BT平均損益": st.column_config.NumberColumn("BT損益", format="%.1f"),
+                                 "BT最大DD": st.column_config.NumberColumn("最大DD", format="%.1f"),
+                             })
+                st.download_button(label=f"📥 買い候補CSVをダウンロード（{len(buy_only)}銘柄）", data=buy_only[[c for c in display_cols if c in buy_only.columns and c != "チャート"]].to_csv(index=False, encoding='utf-8-sig'), file_name=f"買い候補_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
+
+                st.subheader("📈 バックテスト結果")
+                st.dataframe(buy_only[[c for c in ['コード', '会社名', 'BT勝率', 'BT平均損益', 'BT取引数', 'BT最大DD', 'RRレシオ'] if c in buy_only.columns]], use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("📊 買い候補チャート")
+                try: import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; HAS_MPL = True
+                except: HAS_MPL = False
+
+                def plot_stock_chart(code, name, stop_price, target_price):
+                    try:
+                        tk2 = yf.Ticker(f"{code}.T")
+                        hist2 = tk2.history(period="6mo")
+                        if len(hist2) < 30: return None
+                        hist2 = hist2.reset_index()
+                        hist2['MA25'] = hist2['Close'].rolling(25).mean()
+                        hist2['MA200'] = hist2['Close'].rolling(200).mean()
+                        hist2['BB_upper'], hist2['BB_mid'], hist2['BB_lower'] = calculate_bb(hist2)
+                        hist2['VolMA5'] = hist2['Volume'].rolling(5).mean()
+                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+                        fig.patch.set_facecolor('#0E1117'); ax1.set_facecolor('#0E1117'); ax2.set_facecolor('#0E1117')
+                        for i, row in hist2.iterrows():
+                            c = '#FF4B4B' if row['Close'] >= row['Open'] else '#1F77B4'
+                            ax1.plot([i, i], [row['Low'], row['High']], color=c, linewidth=0.8)
+                            ax1.bar(i, abs(row['Close'] - row['Open']), bottom=min(row['Open'], row['Close']), color=c, width=0.6, alpha=0.9)
+                        ax1.plot(range(len(hist2)), hist2['MA25'], color='orange', linewidth=1.2, label='MA25')
+                        ax1.plot(range(len(hist2)), hist2['MA200'], color='#00BFFF', linewidth=1.0, label='MA200', linestyle='--')
+                        ax1.fill_between(range(len(hist2)), hist2['BB_upper'], hist2['BB_lower'], alpha=0.08, color='gray')
+                        ax1.plot(range(len(hist2)), hist2['BB_mid'], color='#AAAAAA', linewidth=0.8, linestyle=':')
+                        ax1.plot(range(len(hist2)), hist2['BB_upper'], color='#888888', linewidth=0.6)
+                        ax1.plot(range(len(hist2)), hist2['BB_lower'], color='#888888', linewidth=0.6)
+                        ax1.axhline(y=stop_price, color='red', linestyle='--', linewidth=1.2, label=f'損切 {stop_price}')
+                        ax1.axhline(y=target_price, color='#00FF7F', linestyle='--', linewidth=1.2, label=f'利確 {target_price}')
+                        ax1.text(len(hist2)-1, stop_price, f' 損切 {stop_price}', color='red', fontsize=8, va='center')
+                        ax1.text(len(hist2)-1, target_price, f' 利確 {target_price}', color='#00FF7F', fontsize=8, va='center')
+                        ax1.set_title(f'{code}  {name}', color='white', fontsize=13)
+                        ax1.tick_params(colors='#AAAAAA')
+                        ax1.set_ylabel('株価 (円)', color='#AAAAAA')
+                        for sp in ax1.spines.values(): sp.set_edgecolor('#333333')
+                        ax1.legend(loc='upper left', fontsize=8, facecolor='#1E1E1E', labelcolor='white', framealpha=0.7)
+                        ax1.grid(axis='y', color='#222222', linewidth=0.5)
+                        vc = ['#FF4B4B' if c >= o else '#1F77B4' for c, o in zip(hist2['Close'], hist2['Open'])]
+                        ax2.bar(range(len(hist2)), hist2['Volume'], color=vc, alpha=0.7, width=0.6)
+                        ax2.plot(range(len(hist2)), hist2['VolMA5'], color='yellow', linewidth=1)
+                        ax2.set_ylabel('出来高', color='#AAAAAA'); ax2.tick_params(colors='#AAAAAA')
+                        for sp in ax2.spines.values(): sp.set_edgecolor('#333333')
+                        ax2.grid(axis='y', color='#222222', linewidth=0.5)
+                        ts = max(1, len(hist2) // 8); ticks = list(range(0, len(hist2), ts))
+                        ax2.set_xticks(ticks)
+                        ax2.set_xticklabels([str(hist2['Date'].iloc[t])[:10] for t in ticks], rotation=30, ha='right', color='#AAAAAA', fontsize=7)
+                        plt.tight_layout(h_pad=0.5)
+                        return fig
+                    except: return None
+
+                for i, (code, name, stop_p, tgt_p) in enumerate(buy_only[['コード', '会社名', '損切り価格', '利確目標']].values.tolist()):
+                    with st.expander(f"📈 {code} {name} 損切:{stop_p}円 / 利確:{tgt_p}円", expanded=(i == 0)):
+                        cl, cr = st.columns([4, 1])
+                        with cl:
+                            with st.spinner(f"{code} チャート読み込み中..."):
+                                fig = plot_stock_chart(code, name, float(stop_p), float(tgt_p)) if HAS_MPL else None
+                            if fig: st.pyplot(fig, use_container_width=True); plt.close(fig)
+                            else:
+                                try:
+                                    tk3 = yf.Ticker(f"{code}.T")
+                                    h3 = tk3.history(period="6mo").reset_index()
+                                    if len(h3) > 0:
+                                        h3['MA25'] = h3['Close'].rolling(25).mean(); h3['MA200'] = h3['Close'].rolling(200).mean(); h3 = h3.set_index('Date')
+                                        st.line_chart(h3[['Close','MA25','MA200']], use_container_width=True)
+                                except Exception as e: st.warning(f"チャート表示失敗: {e}")
+                        with cr:
+                            r = buy_only[buy_only['コード'] == code].iloc[0]
+                            st.markdown(f"**{name}**\n🔴 損切: **{stop_p}円**\n🟢 利確: **{tgt_p}円**\n📊 スコア: **{r['スコア']}**\n🗓 月足: {r.get('月足','-')}\n📅 週足: {r.get('週足','-')}\nRSI: {r['RSI(14)']}\nBB位置: {r['BB位置']}\n反発サイン: {r['反発サイン']}\nBT勝率: {r['BT勝率']}")
+                            st.link_button("🔗 TradingView", r['チャート'])
+
+                if discord_webhook:
+                    msg = "【🔥押し目買いサイン点灯】\n" + "\n".join([f"・{r['コード']} {r['会社名']} スコア{r['スコア']} BT勝率{r['BT勝率']} 月足:{r.get('月足','-')} 週足:{r.get('週足','-')}" for _, r in buy_only.iterrows()])
+                    requests.post(discord_webhook, json={"content": msg})
+                    st.balloons()
+            else: st.info("現在、押し目買い条件を満たす銘柄はありません。")
+
+            st.markdown("---")
+            st.subheader("👀 監視銘柄（押し目形成中）")
+            watch = res_df[res_df['判定'] == "👀 監視（押し目形成中）"].sort_values('スコア', ascending=False)
+            if not watch.empty: st.dataframe(watch, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("チャート")})
+            else: st.write("監視銘柄はありません。")
+
+            st.markdown("---")
+            st.subheader("⏳ BB下限タッチ済み・反発サイン待ち")
+            sign_wait = res_df[res_df['判定'] == "⏳ 様子見（反発サイン待ち）"].sort_values('スコア', ascending=False)
+            if not sign_wait.empty: st.dataframe(sign_wait, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("チャート")})
+            else: st.write("該当銘柄はありません。")
+
+            st.markdown("---")
+            st.subheader("⏳ BB下限未タッチ（押し目待ち）")
+            bb_not_touched = res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"].sort_values('スコア', ascending=False)
+            if not bb_not_touched.empty: st.dataframe(bb_not_touched, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("チャート")})
+            else: st.write("該当銘柄はありません。")
+
+            st.markdown("---")
+            st.subheader("📊 スキャン統計")
+            c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+            c1.metric("解析銘柄数", len(res_df))
+            c2.metric("🔥 買い候補", len(res_df[res_df['判定'] == "🔥 買い候補"]))
+            c3.metric("👀 押し目形成中", len(res_df[res_df['判定'] == "👀 監視（押し目形成中）"]))
+            c4.metric("⏳ 反発サイン待ち", len(res_df[res_df['判定'] == "⏳ 様子見（反発サイン待ち）"]))
+            c5.metric("👀 BB下限未タッチ", len(res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"]))
+            c6.metric("⛔ BB上部/過熱", len(res_df[res_df['判定'] == "⛔ 除外（BB上部/過熱）"]))
+            c7.metric("⛔ 弱い銘柄", len(res_df[res_df['判定'] == "⛔ 除外（弱い銘柄）"]))
+
+            st.markdown("---")
+            st.subheader("📋 全銘柄一覧")
+            st.dataframe(res_df, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("チャート")})
 
 with tab_short:
-    st.subheader("🔻 空売りスキャン")
-    short_credit_files = st.file_uploader("📂 信用CSVファイルをアップロード", type=['csv'], accept_multiple_files=True, key="short_csv")
+    st.subheader("🔻 空売りスキャン（信用データ＋テクニカル）")
+    with st.expander("⚙️ 空売り条件設定", expanded=False):
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        with sc1: rsi_short_min = st.slider("RSI下限（空売り）", 30, 60, 40, key="s_rsi_min")
+        with sc2: rsi_short_max = st.slider("RSI上限（空売り）", 45, 75, 60, key="s_rsi_max")
+        with sc3: short_stop_pct = st.slider("損切ライン(%)", 2, 10, 4, key="s_stop")
+        with sc4: short_target_pct = st.slider("利確ライン(%)", 4, 20, 8, key="s_target")
+        st.info(f"**【空売り条件】**\n1. 株価 < 200日線\n2. RSI戻り一服({rsi_short_min}〜{rsi_short_max})\n3. 信用倍率高い\n4. 売り残増加\n5. 失速サイン\n🎯 利確: -{short_target_pct}% 💀 損切: +{short_stop_pct}%")
+
+    col_up1, col_up2 = st.columns(2)
+    with col_up1: short_credit_files = st.file_uploader("📂 ① 信用CSVをアップロード（複数可）", type=['csv'], accept_multiple_files=True, key="short_credit_csv")
+    with col_up2: short_tech_files = st.file_uploader("📂 ② テクニカルCSVをアップロード（複数可）", type=['csv'], accept_multiple_files=True, key="short_tech_csv")
+    st.caption("💡 信用CSVのみでもスキャン可能です")
+
+    df_merged = None
     if short_credit_files:
-        st.info("CSVが読み込まれました。スキャンを実行してください。")
+        dfs_credit = []
+        for f in short_credit_files:
+            f.seek(0)
+            try: dfs_credit.append(pd.read_csv(f, encoding='utf-8-sig'))
+            except:
+                f.seek(0)
+                try: dfs_credit.append(pd.read_csv(f, encoding='shift-jis'))
+                except: f.seek(0); dfs_credit.append(pd.read_csv(f, encoding='utf-8'))
+        df_credit = pd.concat(dfs_credit, ignore_index=True).drop_duplicates()
+
+        if short_tech_files:
+            dfs_tech = []
+            for f in short_tech_files:
+                f.seek(0)
+                try: dfs_tech.append(pd.read_csv(f, encoding='shift-jis'))
+                except: f.seek(0); dfs_tech.append(pd.read_csv(f, encoding='utf-8'))
+            df_tech = pd.concat(dfs_tech, ignore_index=True).drop_duplicates()
+            df_credit['_code'] = df_credit[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
+            tc_col = [c for c in df_tech.columns if 'コード' in c]
+            tn_col = [c for c in df_tech.columns if '銘柄名' in c or '会社名' in c]
+            if tc_col and tn_col:
+                df_tech['_code'] = df_tech[tc_col[0]].astype(str).str.strip()
+                df_merged = df_credit.merge(df_tech[['_code', tn_col[0]]], on='_code', how='left')
+                df_merged['_name'] = df_merged[tn_col[0]].fillna(df_merged.get('銘柄名', df_merged['_code']))
+            else:
+                df_merged = df_credit.copy()
+                df_merged['_code'] = df_merged[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
+                df_merged['_name'] = df_merged.get('銘柄名', df_merged['_code'])
+        else:
+            df_credit['_code'] = df_credit[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
+            nc = [c for c in df_credit.columns if '銘柄名' in c or '会社名' in c or '銘柄' in c]
+            df_merged = df_credit.copy()
+            df_merged['_name'] = df_merged[nc[0]] if nc else df_merged['_code']
+
+    if df_merged is not None: st.caption(f"📊 スキャン対象: {len(df_merged)}銘柄")
+    else: st.caption("📊 信用CSVをアップロードするとスキャン対象銘柄数が表示されます")
+
+    if st.button(f"🔻 {len(df_merged)}銘柄を空売りスキャン実行" if df_merged is not None else "🔻 空売りスキャン実行（先にCSVをアップロード）", type="primary", disabled=(df_merged is None)):
+        short_results, short_errors = [], []
+        s_bar, s_status = st.progress(0), st.empty()
+
+        def get_credit_col(row, keywords):
+            for k in keywords:
+                for c in row.index:
+                    if k in str(c) and pd.notna(row[c]):
+                        try: return float(str(row[c]).replace(',', ''))
+                        except: return np.nan
+            return np.nan
+
+        for i, (_, row) in enumerate(df_merged.iterrows()):
+            code, name = str(row['_code']), str(row['_name'])
+            cr, sc, sblr = get_credit_col(row, ['信用倍率']), get_credit_col(row, ['前週比(売)', '前週比（売）']), get_credit_col(row, ['売買高レシオ'])
+            s_status.text(f"空売りスキャン中... {code} {name} ({i+1}/{len(df_merged)}) ✅{len(short_results)}件")
+            res = analyze_short(code, name, cr, sc, sblr, stop_pct=short_stop_pct, target_pct=short_target_pct, rsi_short_min=rsi_short_min, rsi_short_max=rsi_short_max)
+            if res: short_results.append(res)
+            else: short_errors.append(code)
+            s_bar.progress((i + 1) / len(df_merged))
+
+        s_status.text(f"✅ 完了！ 成功:{len(short_results)}件 / 失敗:{len(short_errors)}件")
+        st.session_state.short_results = short_results
+
+        if discord_webhook and short_results:
+            cands = pd.DataFrame(short_results)
+            cands = cands[cands['判定'] == "🔻 空売り候補"]
+            if not cands.empty:
+                requests.post(discord_webhook, json={"content": "【🔻空売りサイン点灯】\n" + "\n".join([f"・{r['コード']} {r['会社名']} スコア{r['スコア']} 信用倍率{r['信用倍率']} 失速:{r['失速サイン']}" for _, r in cands.iterrows()])})
+
+    if st.session_state.short_results:
+        short_df = pd.DataFrame(st.session_state.short_results)
+        st.markdown("---")
+        st.header("🔻 【厳選】空売り候補")
+        short_cands = short_df[short_df['判定'] == "🔻 空売り候補"].sort_values('スコア', ascending=False)
+
+        if not short_cands.empty:
+            sc_display = short_cands.copy()
+            if 'チャート' in sc_display.columns: sc_display['📊'] = sc_display['チャート']
+            disp_cols = ["コード", "会社名", "スコア", "現在値", "RSI(14)", "MACD", "BB位置", "信用倍率", "売り残前週比", "失速サイン", "陽線日数", "損切り価格", "利確目標", "RRレシオ", "200日乖離", "25日乖離", "MA配列", "根拠", "注意点", "📊"]
+            disp = [c for c in disp_cols if c in sc_display.columns]
+            st.dataframe(sc_display[disp], use_container_width=True, height=400,
+                         column_config={"📊": st.column_config.LinkColumn("📊", display_text="📊"), "損切り価格": st.column_config.NumberColumn("損切💀", format="%.0f"), "利確目標": st.column_config.NumberColumn("利確🎯", format="%.0f"), "スコア": st.column_config.ProgressColumn("スコア", min_value=0, max_value=15)})
+            st.download_button(label=f"📥 空売り候補CSVダウンロード（{len(short_cands)}銘柄）", data=short_cands[[c for c in disp_cols if c in short_cands.columns and c != '📊']].to_csv(index=False, encoding='utf-8-sig'), file_name=f"空売り候補_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv", use_container_width=True)
+        else: st.info("空売り候補は現在ありません。")
+
+        st.markdown("---")
+        st.subheader("👀 監視（下落トレンド継続）")
+        watch_short = short_df[short_df['判定'] == "👀 監視（下落トレンド継続）"].sort_values('スコア', ascending=False)
+        if not watch_short.empty: st.dataframe(watch_short, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("📊")})
+        else: st.write("該当なし")
+
+        st.markdown("---")
+        st.subheader("⏳ 様子見")
+        watch_short2 = short_df[short_df['判定'] == "⏳ 様子見"].sort_values('スコア', ascending=False)
+        if not watch_short2.empty: st.dataframe(watch_short2, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("📊")})
+        else: st.write("該当なし")
+
+        st.markdown("---")
+        st.subheader("📊 空売りスキャン統計")
+        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+        sc1.metric("解析銘柄数", len(short_df))
+        sc2.metric("🔻 空売り候補", len(short_df[short_df['判定'] == "🔻 空売り候補"]))
+        sc3.metric("👀 監視", len(short_df[short_df['判定'] == "👀 監視（下落トレンド継続）"]))
+        sc4.metric("⏳ 様子見", len(short_df[short_df['判定'] == "⏳ 様子見"]))
+        sc5.metric("⛔ 除外/対象外", len(short_df[short_df['判定'].isin(["⛔ 除外（200日線上・買いスキャン対象）", "➖ 対象外"])]))
+
+        st.markdown("---")
+        st.subheader("📋 全銘柄一覧（空売りスキャン）")
+        st.dataframe(short_df, use_container_width=True, column_config={"チャート": st.column_config.LinkColumn("📊")})
 
 with tab_ai:
     st.subheader("📰 AI 投資判断（Gemini）")
     news_input = st.text_area("ニュースをペースト", height=150)
-    if st.button("AI分析を実行") and gemini_key and news_input:
-        try:
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            res = model.generate_content(f"日本株スイングトレード戦略に基づき、次のニュースを簡潔に分析してください:\n{news_input}")
-            st.info(res.text)
-        except Exception as e: st.error(f"エラー: {e}")
+    if st.button("AI分析を実行"):
+        if not gemini_key: st.warning("⚠️ システム設定欄に Gemini API Key を入力してください")
+        elif not news_input: st.warning("⚠️ ニュースを貼り付けてください")
+        else:
+            try:
+                genai.configure(api_key=gemini_key)
+                tgt_model = next((m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods and ('flash' in m.name or 'pro' in m.name)), None)
+                if not tgt_model: st.error("使えるモデルが見つかりません")
+                else:
+                    with st.spinner(f"AI ({tgt_model.replace('models/', '')}) が分析中..."):
+                        res = genai.GenerativeModel(tgt_model).generate_content(f"あなたは日本株スイングトレードの専門家です。\n戦略は「強い銘柄の押し目反発」と「弱い銘柄の空売り」の両方です。\n以下のニュースを読み、\n①相場全体への影響\n②押し目買いが狙えるセクター・銘柄\n③空売りが有効なセクター・銘柄\n④スイングトレードの観点で注目すべきポイント\nを簡潔に解説してください。\n\nニュース:\n{news_input}")
+                        st.success("分析完了！"); st.info(res.text)
+            except Exception as e: st.error(f"AI解析エラー: {e}")ｓ
