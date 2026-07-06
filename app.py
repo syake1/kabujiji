@@ -110,7 +110,7 @@ with st.expander("⚙️ システム設定 / スイング条件設定", expande
 - 5分足で陽線転換・下ヒゲ確認後に打診
 
 ❌ 見送り条件：
-- 個別の悪材料がある
+- 個別悪材料がある
 - 出来高が増え続けている
 - 節目サポートを割り込んだまま
 - 月足・週足がNG
@@ -147,20 +147,14 @@ def calculate_ma25(data):
 # ★ 月足フィルター
 # ================================================================
 def check_monthly_filter(tk):
-    """
-    月足チェック：直近3本を確認（当月足は未確定のため前月・前々月も含めてチェック）
-    NG: 上ヒゲ陰線 / 大陰線
-    OK: 陽線 / 小陰線
-    戻り値: (ok: bool, label: str)
-    """
     try:
         monthly = tk.history(period="2y", interval="1mo")
         if len(monthly) < 3:
             return True, "月足データ不足"
 
         check_targets = [
-            (monthly.iloc[-2], monthly.iloc[-3], "前月"),   # 前月（確定済み）
-            (monthly.iloc[-1], monthly.iloc[-2], "当月"),   # 当月（確定or未確定）
+            (monthly.iloc[-2], monthly.iloc[-3], "前月"),
+            (monthly.iloc[-1], monthly.iloc[-2], "当月"),
         ]
 
         for (target, prev_candle, label) in check_targets:
@@ -191,12 +185,6 @@ def check_monthly_filter(tk):
 # ★ 週足フィルター
 # ================================================================
 def check_weekly_filter(tk):
-    """
-    週足チェック：直近3本 + 25週線の向きを確認
-    NG: 週足が上ヒゲ陰線 / 25週線が下向き かつ 株価が25週線を下抜け
-    OK: 週足陽線 / 25週線上向き継続
-    戻り値: (ok: bool, label: str)
-    """
     try:
         weekly = tk.history(period="2y", interval="1wk")
         if len(weekly) < 10:
@@ -335,7 +323,7 @@ def backtest(hist, stop_pct, target_pct, rsi_min, rsi_max, vol_mult):
     }
 
 # ================================================================
-# 買いスキャン解析 (修正版)
+# ★ 買いスキャン解析 (ズレ修正完了版)
 # ================================================================
 def analyze_stock(ticker_code, company_name,
                   stop_pct, target_pct, rsi_min, rsi_max, ma200_range, vol_mult):
@@ -394,18 +382,17 @@ def analyze_stock(ticker_code, company_name,
         bb_range = bb_upper_val - bb_lo_val
         bb_pos   = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
-        # ★ BB下限タッチ判定（修正：当日を0日前として厳密に過去5日間をスキャン）
+        # ★ BB下限タッチ判定（修正：当日を0日前として過去5日間を正しくスキャン）
         bb_touched_lower  = False
         bb_touch_days_ago = -1
         
-        for day_idx in range(6): # 0(今日), 1(昨日), 2(2日前), 3, 4, 5
+        for day_idx in range(6):
             if len(hist) > day_idx:
                 _row   = hist.iloc[-(day_idx + 1)]
                 _bb_lo = float(_row['BB_lower'])
                 _low   = float(_row['Low'])
                 _close = float(_row['Close'])
                 
-                # 余裕枠（1.005）を外し、安値か終値がしっかり下限を下回ったかで厳密に判定
                 if _low <= _bb_lo or _close <= _bb_lo:
                     bb_touched_lower  = True
                     bb_touch_days_ago = day_idx
@@ -460,7 +447,6 @@ def analyze_stock(ticker_code, company_name,
         else:
             warnings.append("25日線下向き")
 
-        # スコア加算ロジックの修正
         if bb_touched_lower and bb_pos <= 80:
             if bb_touch_days_ago == 0:
                 score += 3
@@ -546,7 +532,6 @@ def analyze_stock(ticker_code, company_name,
         must_ok      = (current_price > ma200) and ma25_slope
         has_reversal = len(reversal_signs) > 0
 
-        # ★ 判定（ステータス割り振りの適正化）
         if not must_ok:
             status = "⛔ 除外（弱い銘柄）"
         elif not monthly_ok:
@@ -602,8 +587,8 @@ def analyze_stock(ticker_code, company_name,
             if isinstance(cal, pd.DataFrame) and not cal.empty:
                 d = cal.loc['Earnings Date'].iloc[0] if 'Earnings Date' in cal.index else cal.iloc[0, 0]
                 earnings_date = d.strftime('%Y/%m/%d')
-        except:
-            pass
+            except:
+                pass
 
         return {
             "コード":      ticker_code,
@@ -703,6 +688,7 @@ def analyze_short(ticker_code, company_name,
         ma25_5ago        = float(hist['MA25'].dropna().iloc[-6]) if len(hist['MA25'].dropna()) >= 6 else ma25
         ma25_slope_down  = ma25 < ma25_5ago
 
+        trend_down = diff_pct_200 < 0
         bullish_count = 0
         for _j in range(1, 6):
             if len(hist) > _j:
@@ -836,7 +822,6 @@ def analyze_short(ticker_code, company_name,
             score = min(score + 1, 15)
             reasons.append("MACD下方向")
 
-        trend_down = diff_pct_200 < 0
         if not trend_down:
             status = "⛔ 除外（200日線上・買いスキャン対象）"
         elif score >= 9:
@@ -880,7 +865,6 @@ def analyze_short(ticker_code, company_name,
             "損切り価格":    stop_price,
             "利確目標":      target_price,
             "RRレシオ":      f"1:{rr_ratio}",
-            "チャート":      f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}",
             "根拠":          " / ".join(reasons) if reasons else "-",
             "注意点":        " / ".join(warnings) if warnings else "-",
         }
@@ -1092,7 +1076,7 @@ with tab_buy:
                         ax1.plot(range(len(hist2)), hist2['MA25'],  color='orange',  linewidth=1.2, label='MA25')
                         ax1.plot(range(len(hist2)), hist2['MA200'], color='#00BFFF', linewidth=1.0, label='MA200', linestyle='--')
                         ax1.fill_between(range(len(hist2)), hist2['BB_upper'], hist2['BB_lower'], alpha=0.08, color='gray')
-                        ax1.plot(range(len(hist2)), hist2['BB_mid'],   color='#AAAAAA', linewidth=0.8, linestyle=':')
+                        ax1.plot(range(len(hist2)), hist2['BB_mid'],  color='#AAAAAA', linewidth=0.8, linestyle=':')
                         ax1.plot(range(len(hist2)), hist2['BB_upper'], color='#888888', linewidth=0.6)
                         ax1.plot(range(len(hist2)), hist2['BB_lower'], color='#888888', linewidth=0.6)
                         ax1.axhline(y=stop_price,   color='red',    linestyle='--', linewidth=1.2, label=f'損切 {stop_price}')
@@ -1248,7 +1232,7 @@ with tab_short:
             type=['csv'], accept_multiple_files=True, key="short_credit_csv"
         )
     with col_up2:
-        short_tech_files = f = st.file_uploader(
+        short_tech_files = st.file_uploader(
             "📂 ② テクニカルCSVをアップロード（複数可）",
             type=['csv'], accept_multiple_files=True, key="short_tech_csv"
         )
@@ -1466,7 +1450,7 @@ with tab_ai:
                             "②押し目買いが狙えるセクター・銘柄\n"
                             "③空売りが有効なセクター・銘柄\n"
                             "④スイングトレードの観点で注目すべきポイント\n"
-                            "を開潔に解説してください。\n\nニュース:\n" + news_input
+                            "を簡潔に解説してください。\n\nニュース:\n" + news_input
                         )
                         res = model.generate_content(prompt)
                         st.success("分析完了！")
