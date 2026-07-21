@@ -969,8 +969,14 @@ with tab_watch:
     st.caption("ここで登録した銘柄をGitHub Actionsが15分ごとに監視し、パラボリック上転換でDiscordに通知します")
 
     # GitHub設定
-    github_token = st.secrets.get("GITHUB_TOKEN", "") if hasattr(st, 'secrets') else ""
-    github_repo  = st.secrets.get("GITHUB_REPO", "syake1/kabu-alert") if hasattr(st, 'secrets') else "syake1/kabu-alert"
+    try:
+        github_token = st.secrets["GITHUB_TOKEN"]
+    except:
+        github_token = ""
+    try:
+        github_repo = st.secrets["GITHUB_REPO"]
+    except:
+        github_repo = "syake1/kabu-alert"
 
     if not github_token:
         st.warning("⚠️ Streamlit CloudのSecretsに「GITHUB_TOKEN」を設定してください")
