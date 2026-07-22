@@ -680,7 +680,7 @@ with tab_buy:
 
     if st.session_state.analysis_results is not None:
         res_df = st.session_state.analysis_results
-        if not res_df.empty and '判定' in res_df.columns:
+        if '判定' in res_df.columns:
             st.markdown("---")
             st.header("🔥 買い候補（BB下限タッチ＋反発サイン）")
             buy_df = res_df[res_df['判定'].str.contains('買い候補', na=False)].copy()
@@ -847,31 +847,56 @@ with tab_short:
             except:
                 f.seek(0)
                 try: dfs_credit.append(pd.read_csv(f, encoding='shift-jis'))
-                except: f.seek(0); dfs_credit.append(pd.read_csv(f, encoding='utf-8'))
-        df_credit = pd.concat(dfs_credit, ignore_index=True).drop_duplicates()
-        if short_tech_files:
-            dfs_tech = []
-            for f in short_tech_files:
-                f.seek(0)
-                try: dfs_tech.append(pd.read_csv(f, encoding='shift-jis'))
-                except: f.seek(0); dfs_tech.append(pd.read_csv(f, encoding='utf-8'))
-            df_tech = pd.concat(dfs_tech, ignore_index=True).drop_duplicates()
-            df_credit['_code'] = df_credit[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
-            tech_code_col = [c for c in df_tech.columns if 'コード' in c]
-            tech_name_col = [c for c in df_tech.columns if '銘柄名' in c or '会社名' in c]
-            if tech_code_col and tech_name_col:
-                df_tech['_code'] = df_tech[tech_code_col[0]].astype(str).str.strip()
-                df_merged = df_credit.merge(df_tech[['_code', tech_name_col[0]]], on='_code', how='left')
-                df_merged['_name'] = df_merged[tech_name_col[0]].fillna(df_merged.get('銘柄名', df_merged['_code']))
+                except:
+                    f.seek(0)
+                    try: dfs_credit.append(pd.read_csv(f, encoding='utf-8'))
+                    except Exception as e:
+                        st.error(f"❌ 信用CSVの読み込みに失敗しました: {e}")
+        if dfs_credit:
+            df_credit = pd.concat(dfs_credit, ignore_index=True).drop_duplicates()
+            st.caption(f"📂 信用CSV: {len(df_credit)}行 | 列: {list(df_credit.columns)}")
+
+            # コード列を柔軟に検出（「コード」「銘柄コード」「証券コード」など）
+            credit_code_col = [c for c in df_credit.columns if 'コード' in c or 'code' in c.lower()]
+            if not credit_code_col:
+                st.error(f"❌ 信用CSVに「コード」列が見つかりません。列名: {list(df_credit.columns)}")
             else:
-                df_merged = df_credit.copy()
-                df_merged['_code'] = df_merged[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
-                df_merged['_name'] = df_merged.get('銘柄名', df_merged['_code'])
-        else:
-            df_credit['_code'] = df_credit[[c for c in df_credit.columns if 'コード' in c][0]].astype(str).str.strip()
-            name_col = [c for c in df_credit.columns if '銘柄名' in c or '会社名' in c or '銘柄' in c]
-            df_merged = df_credit.copy()
-            df_merged['_name'] = df_merged[name_col[0]] if name_col else df_merged['_code']
+                if short_tech_files:
+                    dfs_tech = []
+                    for f in short_tech_files:
+                        f.seek(0)
+                        try: dfs_tech.append(pd.read_csv(f, encoding='shift-jis'))
+                        except:
+                            f.seek(0)
+                            try: dfs_tech.append(pd.read_csv(f, encoding='utf-8-sig'))
+                            except:
+                                f.seek(0)
+                                try: dfs_tech.append(pd.read_csv(f, encoding='utf-8'))
+                                except Exception as e:
+                                    st.error(f"❌ テクニカルCSVの読み込みに失敗しました: {e}")
+                    if dfs_tech:
+                        df_tech = pd.concat(dfs_tech, ignore_index=True).drop_duplicates()
+                        st.caption(f"📂 テクニカルCSV: {len(df_tech)}行 | 列: {list(df_tech.columns)}")
+                        df_credit['_code'] = df_credit[credit_code_col[0]].astype(str).str.strip()
+                        tech_code_col = [c for c in df_tech.columns if 'コード' in c or 'code' in c.lower()]
+                        tech_name_col = [c for c in df_tech.columns if '銘柄名' in c or '会社名' in c]
+                        if tech_code_col and tech_name_col:
+                            df_tech['_code'] = df_tech[tech_code_col[0]].astype(str).str.strip()
+                            df_merged = df_credit.merge(df_tech[['_code', tech_name_col[0]]], on='_code', how='left')
+                            df_merged['_name'] = df_merged[tech_name_col[0]].fillna(df_merged['_code'])
+                        else:
+                            df_merged = df_credit.copy()
+                            df_merged['_code'] = df_credit[credit_code_col[0]].astype(str).str.strip()
+                            name_col = [c for c in df_credit.columns if '銘柄名' in c or '会社名' in c or '銘柄' in c]
+                            df_merged['_name'] = df_merged[name_col[0]] if name_col else df_merged['_code']
+                else:
+                    df_credit['_code'] = df_credit[credit_code_col[0]].astype(str).str.strip()
+                    name_col = [c for c in df_credit.columns if '銘柄名' in c or '会社名' in c or '銘柄' in c]
+                    df_merged = df_credit.copy()
+                    df_merged['_name'] = df_merged[name_col[0]] if name_col else df_merged['_code']
+
+                if df_merged is not None:
+                    st.success(f"✅ {len(df_merged)}銘柄を読み込みました。スキャンボタンを押してください。")
 
     btn_label = f"🔻 {len(df_merged)}銘柄を空売りスキャン実行" if df_merged is not None else "🔻 空売りスキャン実行（先にCSVをアップロード）"
     if st.button(btn_label, type="primary", disabled=(df_merged is None)):
