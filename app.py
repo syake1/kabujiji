@@ -16,7 +16,7 @@ if 'short_results' not in st.session_state:
     st.session_state.short_results = None
 
 st.title("🚀 アンチグラビティ・コア Pro+")
-st.caption("シンプル版：200日線✅ 25日線上向き✅ BB下限タッチ✅ 反発サイン✅")
+st.caption("シンプル版：200日線✅ 25日線上向き✅ シンプル抽出モード")
 
 with st.expander("⚙️ システム設定", expanded=False):
     row0 = st.columns([2, 2, 1])
@@ -40,7 +40,6 @@ with st.expander("⚙️ システム設定", expanded=False):
     with c4: min_price   = st.slider("最低株価(円)", 0, 2000, 500, step=100)
 
     c5, c6, c7 = st.columns(3)
-    # 最低売買代金をデフォルト500百万円に引き上げ
     with c5: min_turnover  = st.slider("最低売買代金(百万円/日)", 0, 2000, 500, step=100)
     with c6: min_atr_pct   = st.slider("最低ATR%（値幅）", 0.0, 5.0, 1.0, step=0.1)
     with c7: min_bt_trades = st.slider("最低BT取引数", 0, 30, 5, step=1)
@@ -49,8 +48,7 @@ with st.expander("⚙️ システム設定", expanded=False):
 **【スキャン条件】**
 1. ✅ 200日線の上（長期上昇トレンド継続中）
 2. ✅ 25日線が上向き（短期トレンド上昇中）
-3. ✅ BB下限タッチ（1〜2日以内）
-4. ✅ 反発サイン（下ヒゲ陽線🔥 / 包み足⚡ / 陽線転換↑）
+3. ✅ 最低売買代金・ATR・BT条件クリア
 
 💹 売買代金:{min_turnover}百万円以上 📊 ATR:{min_atr_pct}%以上 🔢 BT取引数:{min_bt_trades}回以上
 💀 損切:-{stop_pct}% 🎯 利確:+{target_pct}% 最低株価:{min_price}円以上
@@ -66,7 +64,7 @@ with st.expander("⚙️ システム設定", expanded=False):
 | **BB（ボリンジャーバンド）** | 株価の振れ幅を示すバンド。下限に触れると「売られすぎ」のサイン |
 | **ATR%** | 1日の平均的な値幅（株価に対する%）。高いほど動きやすい銘柄 |
 | **売買代金** | 1日の取引金額（百万円）。少ないと売買しにくい薄商い銘柄 |
-| **BT勝率** | 過去データで同じ条件でトレードした場合の勝率 |
+| **反発サイン** | 詳細表示・一覧で参考確認するサイン（下ヒゲ陽線🔥 / 包み足⚡ など） |
     """)
 
 # ================================================================
@@ -92,16 +90,7 @@ def calculate_bb(data, window=20, num_std=2):
     return mid + num_std * std, mid, mid - num_std * std
 
 # ================================================================
-# 月足・週足フィルター（制限を緩めてパススルー）
-# ================================================================
-def check_monthly_filter(tk):
-    return True, "月足チェック免除✅"
-
-def check_weekly_filter(tk):
-    return True, "週足チェック免除✅"
-
-# ================================================================
-# 反発サイン
+# 反発サイン（情報表示用）
 # ================================================================
 def check_reversal_sign(hist):
     signs  = []
@@ -164,7 +153,7 @@ def backtest(hist, stop_pct, target_pct):
             "平均損益": f"{avg_pnl:.2f}%", "最大DD": f"{max_dd:.2f}%"}
 
 # ================================================================
-# 買いスキャン
+# 買いスキャン（トレンド条件のみでシンプル抽出）
 # ================================================================
 def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min_price, min_turnover, min_atr_pct, min_bt_trades):
     import time
@@ -215,6 +204,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bb_range     = bb_upper_val - bb_lo_val
         bb_pos       = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
+        # 基本フィルター：200日線の上 ＆ 25日線上向き
         if current_price <= ma200:
             return None
 
@@ -234,17 +224,15 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         hc   = abs(hist['High'] - hist['Close'].shift())
         lc   = abs(hist['Low']  - hist['Close'].shift())
         tr   = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        atr_val      = tr.rolling(14).mean().iloc[-1]
+        atr_val     = tr.rolling(14).mean().iloc[-1]
         atr_pct_val = atr_val / current_price * 100
         if atr_pct_val < min_atr_pct:
             return None
 
-        monthly_ok, monthly_label = check_monthly_filter(tk)
-        weekly_ok,  weekly_label  = check_weekly_filter(tk)
-        if not monthly_ok or not weekly_ok:
-            return None
-
-        bb_touched        = False
+        # サインやタッチ状態は判定ではなく「情報」として取得
+        reversal_signs = check_reversal_sign(hist)
+        
+        bb_touched = False
         bb_touch_days_ago = 0
         for _bi in range(1, 4):
             if len(hist) > _bi:
@@ -257,22 +245,8 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
                     bb_touch_days_ago = _bi
                     break
 
-        reversal_signs = check_reversal_sign(hist)
-        has_reversal   = len(reversal_signs) > 0
-
-        if not bb_touched:
-            status = "👀 監視（BB下限未タッチ）"
-        elif bb_touched and not has_reversal:
-            status = "⏳ 様子見（反発サイン待ち）"
-        elif bb_touched and has_reversal:
-            if "下ヒゲ陽線" in reversal_signs:
-                status = "🔥 買い候補（最強）"
-            elif "包み足" in reversal_signs:
-                status = "🔥 買い候補（強）"
-            else:
-                status = "✅ 買い候補"
-        else:
-            status = "➖ 対象外"
+        # 条件クリアした銘柄はすべて「🔥 買い候補」として一括抽出
+        status = "🔥 買い候補"
 
         vol_warn = f"⚠️出来高急増({vol_ratio:.1f}x)" if vol_ratio >= vol_mult else ""
 
@@ -310,8 +284,6 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
             "会社名":        company_name,
             "判定":            status,
             "現在値":        round(current_price, 1),
-            "月足":            monthly_label,
-            "週足":            weekly_label,
             "BB位置":        f"{bb_pos:.0f}%({bb_touch_days_ago}日前タッチ)" if bb_touched else f"{bb_pos:.0f}%",
             "RSI(14)":        round(rsi, 1),
             "MACD":            macd_label,
@@ -584,16 +556,13 @@ with tab_buy:
         res_df = st.session_state.analysis_results
         if not res_df.empty and '判定' in res_df.columns:
             st.markdown("---")
-            st.header("🔥 買い候補（BB下限タッチ＋反発サイン）")
+            st.header("🔥 買い候補（トレンド抽出）")
             buy_df = res_df[res_df['判定'].str.contains('買い候補', na=False)].copy()
 
             if not buy_df.empty:
-                order = {"🔥 買い候補（最強）": 0, "🔥 買い候補（強）": 1, "✅ 買い候補": 2}
-                buy_df['_order'] = buy_df['判定'].map(order).fillna(9)
-                buy_df = buy_df.sort_values('_order').drop(columns=['_order'])
                 if 'チャート' in buy_df.columns: buy_df['📊'] = buy_df['チャート']
 
-                display_cols = ["コード","会社名","判定","現在値","月足","週足",
+                display_cols = ["コード","会社名","判定","現在値",
                                 "BB位置","RSI(14)","MACD","ATR%","売買代金(百万)",
                                 "反発サイン","出来高注意","損切り価格","利確目標","RRレシオ",
                                 "200日乖離","25日乖離","BT勝率","BT平均損益","BT取引数","BT最大DD","📊"]
@@ -679,8 +648,6 @@ with tab_buy:
                             st.markdown(f"**{name}**")
                             st.markdown(f"🔴 損切: **{stop_p}円**")
                             st.markdown(f"🟢 利確: **{tgt_p}円**")
-                            st.markdown(f"🗓 月足: {row.get('月足','-')}")
-                            st.markdown(f"📅 週足: {row.get('週足','-')}")
                             st.markdown(f"📊 BB: {row.get('BB位置','-')}")
                             st.markdown(f"🕯 サイン: {row.get('反発サイン','-')}")
                             st.markdown(f"📈 ATR: {row.get('ATR%','-')}")
@@ -690,34 +657,8 @@ with tab_buy:
                 st.info("本日、条件を満たす買い候補はありません。")
 
             st.markdown("---")
-            st.subheader("⏳ 様子見（BB下限タッチ済み・反発サイン待ち）")
-            wait_df = res_df[res_df['判定'] == "⏳ 様子見（反発サイン待ち）"].copy()
-            if not wait_df.empty:
-                if 'チャート' in wait_df.columns: wait_df['📊'] = wait_df['チャート']
-                w_cols = ["コード","会社名","現在値","月足","週足","BB位置","RSI(14)","ATR%","📊"]
-                st.dataframe(wait_df[[c for c in w_cols if c in wait_df.columns]], use_container_width=True,
-                             column_config={"📊": st.column_config.LinkColumn("📊", display_text="📊")})
-            else:
-                st.write("該当なし")
-
-            st.markdown("---")
-            st.subheader("👀 監視（BB下限未タッチ）")
-            watch_df = res_df[res_df['判定'] == "👀 監視（BB下限未タッチ）"].copy()
-            if not watch_df.empty:
-                if 'チャート' in watch_df.columns: watch_df['📊'] = watch_df['チャート']
-                w_cols = ["コード","会社名","現在値","月足","週足","BB位置","RSI(14)","ATR%","📊"]
-                st.dataframe(watch_df[[c for c in w_cols if c in watch_df.columns]], use_container_width=True,
-                             column_config={"📊": st.column_config.LinkColumn("📊", display_text="📊")})
-            else:
-                st.write("該当なし")
-
-            st.markdown("---")
             st.subheader("📊 スキャン統計")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("解析銘柄数", len(res_df))
-            c2.metric("🔥 買い候補", len(res_df[res_df['判定'].str.contains('買い候補', na=False)]))
-            c3.metric("⏳ 様子見",    len(res_df[res_df['判定'].str.contains('様子見', na=False)]))
-            c4.metric("👀 監視",      len(res_df[res_df['判定'].str.contains('監視', na=False)]))
+            st.metric("🔥 買い候補（抽出数）", len(buy_df))
 
             st.markdown("---")
             st.subheader("📋 全銘柄一覧")
