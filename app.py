@@ -241,7 +241,10 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
                     bb_touch_days_ago = _bi
                     break
 
-        # 条件クリアした銘柄はすべて「🔥 買い候補」として一括抽出
+        # BB下限タッチ必須チェック
+        if not bb_touched:
+            return None
+
         status = "🔥 買い候補"
 
         vol_warn = f"⚠️出来高急増({vol_ratio:.1f}x)" if vol_ratio >= vol_mult else ""
