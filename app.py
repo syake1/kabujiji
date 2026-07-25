@@ -16,7 +16,7 @@ if 'short_results' not in st.session_state:
     st.session_state.short_results = None
 
 st.title("🚀 アンチグラビティ・コア Pro+")
-st.caption("シンプル版：200日線✅ 25日線上向き✅ シンプル抽出モード")
+st.caption("シンプル版：200日線✅ BB下限タッチ✅ 反発サイン✅")
 
 with st.expander("⚙️ システム設定", expanded=False):
     row0 = st.columns([2, 2, 1])
@@ -47,7 +47,7 @@ with st.expander("⚙️ システム設定", expanded=False):
     st.info(f"""
 **【スキャン条件】**
 1. ✅ 200日線の上（長期上昇トレンド継続中）
-2. ✅ 25日線が上向き（短期トレンド上昇中）
+2. ✅ BB下限タッチあり（直近3日以内）
 3. ✅ 最低売買代金・ATR・BT条件クリア
 
 💹 売買代金:{min_turnover}百万円以上 📊 ATR:{min_atr_pct}%以上 🔢 BT取引数:{min_bt_trades}回以上
@@ -204,12 +204,8 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bb_range     = bb_upper_val - bb_lo_val
         bb_pos       = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
-        # 基本フィルター：200日線の上 ＆ 25日線上向き
+        # 基本フィルター：200日線の上のみ
         if current_price <= ma200:
-            return None
-
-        ma25_5ago = hist['MA25'].iloc[-6] if len(hist) >= 6 else None
-        if ma25_5ago is None or pd.isna(ma25_5ago) or ma25 <= ma25_5ago:
             return None
 
         if current_price < min_price:
