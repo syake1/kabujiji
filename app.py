@@ -551,19 +551,23 @@ with tab_buy:
                         buys = [r for r in results if '買い候補' in r.get('判定','')]
                         if buys:
                             msg = "【🔥買いシグナル】\n" + "\n".join(
-                                [f"・{r['コード']} {r['会社名']} {r['判定']} {r['反発サイン']} BT:{r['BT勝率']}"
+                                [f"・{r['コード']} {r['会社名']} {r['反発サイン']} BT:{r['BT勝率']}"
                                  for r in buys])
-                            try:
-                                res = requests.post(discord_webhook, json={"content": msg}, timeout=10)
-                                if res.status_code == 204:
-                                    st.success("✅ Discord通知を送信しました")
-                                else:
-                                    st.error(f"❌ Discord通知失敗: ステータス {res.status_code} / Webhook URLを確認してください")
-                            except Exception as e:
-                                st.error(f"❌ Discord通知エラー: {e}")
                         else:
-                            if discord_webhook:
-                                st.info("ℹ️ 買い候補0件のためDiscord通知はスキップしました")
+                            msg = f"【📊スキャン完了】{st.session_state.saved_at}\n本日の買い候補: 0件\nスキャン対象: {len(results)}銘柄"
+                        try:
+                            res = requests.post(discord_webhook, json={"content": msg}, timeout=10)
+                            if res.status_code == 204:
+                                if buys:
+                                    st.success(f"✅ Discord通知しました（買い候補{len(buys)}件）")
+                                else:
+                                    st.info("📨 Discord通知しました（本日候補なし）")
+                            else:
+                                st.error(f"❌ Discord通知失敗: ステータス {res.status_code} / Webhook URLを確認してください")
+                        except Exception as e:
+                            st.error(f"❌ Discord通知エラー: {e}")
+                    else:
+                        st.warning("⚠️ Discord Webhook URLが未入力です（⚙️ システム設定で入力してください）")
 
     if st.session_state.analysis_results is not None:
         res_df = st.session_state.analysis_results
