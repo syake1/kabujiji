@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -387,21 +386,22 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
             try: return float(str(val).replace(',', ''))
             except: return np.nan
 
-        if diff_pct_200 <= -20:    score += 4; reasons.append(f"200日線大幅下({diff_pct_200:.1f}%)")
-        elif diff_pct_200 <= -15: score += 3; reasons.append(f"200日線下({diff_pct_200:.1f}%)")
-        elif diff_pct_200 <= -10: score += 2; reasons.append(f"200日線下({diff_pct_200:.1f}%)")
-        elif diff_pct_200 <= -5:  score += 1; reasons.append(f"200日線やや下({diff_pct_200:.1f}%)")
-        elif diff_pct_200 > 0:    warnings.append(f"200日線上⚠️")
+        # ── 200日線との乖離（上に乖離しているほど空売り好機）──
+        if diff_pct_200 >= 30:    score += 4; reasons.append(f"200日線大幅上乖離(+{diff_pct_200:.1f}%)")
+        elif diff_pct_200 >= 20:  score += 3; reasons.append(f"200日線上乖離(+{diff_pct_200:.1f}%)")
+        elif diff_pct_200 >= 10:  score += 2; reasons.append(f"200日線やや上乖離(+{diff_pct_200:.1f}%)")
+        elif diff_pct_200 >= 5:   score += 1; reasons.append(f"200日線上(+{diff_pct_200:.1f}%)")
+        elif diff_pct_200 < 0:    warnings.append(f"200日線割れ⚠️ 空売り不適({diff_pct_200:.1f}%)")
 
-        if ma200_slope_down: score += 1; reasons.append("200日線下向き")
-        if ma25_slope_down:  score += 1; reasons.append("25日線下向き")
-        if ma25 < ma75 < ma200: score += 2; reasons.append("完全下落配列")
-        elif ma25 < ma200:      score += 1; reasons.append("25日線<200日線")
+        # ── MA配列（上昇配列＝過熱感あり＝空売り好機）──
+        if ma25 > ma75 > ma200:   score += 2; reasons.append("完全上昇配列（過熱）")
+        elif ma25 > ma200:        score += 1; reasons.append("25日線>200日線")
 
-        if rsi_short_min <= rsi <= rsi_short_max: score += 2; reasons.append(f"RSI戻り一服({rsi:.0f})")
-        elif rsi > rsi_short_max: score += 1; warnings.append(f"RSI過熱({rsi:.0f})")
-        elif rsi < 30: warnings.append(f"RSI売られすぎ({rsi:.0f})")
-        else: score += 1; reasons.append(f"RSI({rsi:.0f})")
+        # ── RSI（高RSIほど過熱＝空売り好機）──
+        if rsi >= 75:             score += 3; reasons.append(f"RSI過熱({rsi:.0f})")
+        elif rsi >= 65:           score += 2; reasons.append(f"RSIやや過熱({rsi:.0f})")
+        elif rsi >= 55:           score += 1; reasons.append(f"RSI高め({rsi:.0f})")
+        elif rsi < 40:            warnings.append(f"RSI低すぎ({rsi:.0f})⚠️ 空売り不適")
 
         cr = safe_float(credit_ratio)
         if not np.isnan(cr):
@@ -426,11 +426,12 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
         if macd_dc_recent:    score = min(score+1,15); reasons.append("MACD-DC直近")
         elif macd_below_sig:  score = min(score+1,15); reasons.append("MACD下方向")
 
-        trend_down = diff_pct_200 < 0
-        if not trend_down:   status = "⛔ 除外（200日線上）"
-        elif score >= 9:    status = "🔻 空売り候補"
-        elif score >= 7:    status = "👀 監視"
-        elif score >= 5:    status = "⏳ 様子見"
+        # 200日線を割れている銘柄は空売り不適（すでに下がりきり）
+        overheated = diff_pct_200 >= 5
+        if not overheated:   status = "⛔ 除外（上乖離不足）"
+        elif score >= 9:     status = "🔻 空売り候補"
+        elif score >= 7:     status = "👀 監視"
+        elif score >= 5:     status = "⏳ 様子見"
         else:                status = "➖ 対象外"
 
         stop_price   = round(current_price * (1 + stop_pct  / 100), 1)
