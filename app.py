@@ -16,6 +16,8 @@ if 'short_results' not in st.session_state:
     st.session_state.short_results = None
 if 'df_merged' not in st.session_state:
     st.session_state.df_merged = None
+if 'discord_webhook' not in st.session_state:
+    st.session_state.discord_webhook = ''
 
 st.title("🚀 アンチグラビティ・コア Pro+")
 st.caption("シンプル版：200日線✅ BB下限タッチ✅ 反発サイン✅")
@@ -25,10 +27,10 @@ with st.expander("⚙️ システム設定", expanded=False):
     with row0[0]:
         gemini_key = st.text_input("Gemini API Key", type="password")
     with row0[1]:
-        _wh = st.text_input("Discord Webhook URL", value=st.session_state.discord_webhook, type="password")
+        _wh = st.text_input("Discord Webhook URL", value=st.session_state.get("discord_webhook",""), type="password")
         if _wh:
             st.session_state.discord_webhook = _wh
-        discord_webhook = st.session_state.discord_webhook
+        discord_webhook = st.session_state.get("discord_webhook","")
     with row0[2]:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 リセット", use_container_width=True):
