@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,6 +15,8 @@ if 'analysis_results' not in st.session_state:
     st.session_state.saved_at = ''
 if 'short_results' not in st.session_state:
     st.session_state.short_results = None
+if 'df_merged' not in st.session_state:
+    st.session_state.df_merged = None
 
 st.title("🚀 アンチグラビティ・コア Pro+")
 st.caption("シンプル版：200日線✅ BB下限タッチ✅ 反発サイン✅")
@@ -549,7 +552,17 @@ with tab_buy:
                             msg = "【🔥買いシグナル】\n" + "\n".join(
                                 [f"・{r['コード']} {r['会社名']} {r['判定']} {r['反発サイン']} BT:{r['BT勝率']}"
                                  for r in buys])
-                            requests.post(discord_webhook, json={"content": msg})
+                            try:
+                                res = requests.post(discord_webhook, json={"content": msg}, timeout=10)
+                                if res.status_code == 204:
+                                    st.success("✅ Discord通知を送信しました")
+                                else:
+                                    st.error(f"❌ Discord通知失敗: ステータス {res.status_code} / Webhook URLを確認してください")
+                            except Exception as e:
+                                st.error(f"❌ Discord通知エラー: {e}")
+                        else:
+                            if discord_webhook:
+                                st.info("ℹ️ 買い候補0件のためDiscord通知はスキップしました")
 
     if st.session_state.analysis_results is not None:
         res_df = st.session_state.analysis_results
@@ -680,7 +693,10 @@ with tab_short:
     with col_up1: short_credit_files = st.file_uploader("📂 ① 信用CSV", type=['csv'], accept_multiple_files=True, key="short_credit_csv")
     with col_up2: short_tech_files   = st.file_uploader("📂 ② テクニカルCSV", type=['csv'], accept_multiple_files=True, key="short_tech_csv")
 
-    df_merged = None
+    # CSV未アップロード時はsession_stateをリセット
+    if not short_credit_files:
+        st.session_state.df_merged = None
+    df_merged = st.session_state.df_merged
     if short_credit_files:
         dfs_credit = []
         for f in short_credit_files:
@@ -743,9 +759,11 @@ with tab_short:
                     df_merged['_name'] = df_merged[credit_name_cols[0]] if credit_name_cols else df_merged['_code']
 
                 if df_merged is not None:
+                    st.session_state.df_merged = df_merged
                     st.success(f"✅ {len(df_merged)}銘柄を読み込みました。スキャンを実行してください。")
                     st.caption(f"信用CSV列: {list(df_credit.columns)}")
 
+    df_merged = st.session_state.df_merged
     btn_label = f"🔻 {len(df_merged)}銘柄を空売りスキャン実行" if df_merged is not None else "🔻 空売りスキャン実行（先にCSVをアップロード）"
     if st.button(btn_label, type="primary", disabled=(df_merged is None)):
         short_results = []; s_bar = st.progress(0); s_status = st.empty()
