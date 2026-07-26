@@ -25,7 +25,10 @@ with st.expander("⚙️ システム設定", expanded=False):
     with row0[0]:
         gemini_key = st.text_input("Gemini API Key", type="password")
     with row0[1]:
-        discord_webhook = st.text_input("Discord Webhook URL", type="password")
+        webhook_input = st.text_input("Discord Webhook URL", value=st.session_state.discord_webhook, type="password")
+        if webhook_input:
+            st.session_state.discord_webhook = webhook_input
+        discord_webhook = st.session_state.discord_webhook
     with row0[2]:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 リセット", use_container_width=True):
