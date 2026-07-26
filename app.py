@@ -17,7 +17,7 @@ if 'short_results' not in st.session_state:
 if 'df_merged' not in st.session_state:
     st.session_state.df_merged = None
 if 'discord_webhook' not in st.session_state:
-    st.session_state.discord_webhook = ''
+    st.session_state.discord_webhook = st.secrets.get('DISCORD_WEBHOOK', '')
 
 st.title("🚀 アンチグラビティ・コア Pro+")
 st.caption("シンプル版：200日線✅ BB下限タッチ✅ 反発サイン✅")
