@@ -103,7 +103,7 @@ def check_reversal_sign(hist):
     signs  = []
     latest = hist.iloc[-1]
     prev   = hist.iloc[-2]
-    body         = abs(latest['Close'] - latest['Open'])
+    body       = abs(latest['Close'] - latest['Open'])
     lower_wick = min(latest['Close'], latest['Open']) - latest['Low']
     if latest['Close'] > latest['Open'] and body > 0 and lower_wick >= body * 1.5:
         signs.append("下ヒゲ陽線")
@@ -211,7 +211,6 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bb_range     = bb_upper_val - bb_lo_val
         bb_pos       = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
-        # 基本フィルター：200日線の上のみ
         if current_price <= ma200:
             return None
 
@@ -227,12 +226,11 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         hc   = abs(hist['High'] - hist['Close'].shift())
         lc   = abs(hist['Low']  - hist['Close'].shift())
         tr   = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-        atr_val     = tr.rolling(14).mean().iloc[-1]
-        atr_pct_val = atr_val / current_price * 100
+        atr_val      = tr.rolling(14).mean().iloc[-1]
+        atr_pct_val  = atr_val / current_price * 100
         if atr_pct_val < min_atr_pct:
             return None
 
-        # サインやタッチ状態は判定ではなく「情報」として取得
         reversal_signs = check_reversal_sign(hist)
         
         bb_touched = False
@@ -248,12 +246,10 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
                     bb_touch_days_ago = _bi
                     break
 
-        # BB下限タッチ必須チェック
         if not bb_touched:
             return None
 
         status = "🔥 買い候補"
-
         vol_warn = f"⚠️出来高急増({vol_ratio:.1f}x)" if vol_ratio >= vol_mult else ""
 
         stop_price   = round(current_price * (1 - stop_pct / 100), 1)
@@ -288,22 +284,22 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         return {
             "コード":        ticker_code,
             "会社名":        company_name,
-            "判定":            status,
+            "判定":          status,
             "現在値":        round(current_price, 1),
             "BB位置":        f"{bb_pos:.0f}%({bb_touch_days_ago}日前タッチ)" if bb_touched else f"{bb_pos:.0f}%",
-            "RSI(14)":        round(rsi, 1),
+            "RSI(14)":       round(rsi, 1),
             "MACD":            macd_label,
             "ATR%":            f"{atr_pct}%",
             "売買代金(百万)": f"{avg_turnover:.0f}M",
             "反発サイン":     sign_emoji,
             "出来高注意":     vol_warn,
             "損切り価格":     stop_price,
-            "利確目標":       target_price,
-            "RRレシオ":       f"1:{rr_ratio}",
+            "利確目標":        target_price,
+            "RRレシオ":        f"1:{rr_ratio}",
             "200日乖離":      f"{diff_pct_200:+.1f}%",
             "25日乖離":       f"{diff_pct_25:+.1f}%",
-            "チャート":       f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}",
-            "BT勝率":         bt["勝率"]     if bt else "-",
+            "チャート":        f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}",
+            "BT勝率":        bt["勝率"]     if bt else "-",
             "BT平均損益":     bt["平均損益"] if bt else "-",
             "BT取引数":       bt["取引回数"] if bt else 0,
             "BT最大DD":       bt["最大DD"]   if bt else "-",
@@ -312,7 +308,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         return None
 
 # ================================================================
-# 空売り判定（そのまま維持）
+# 空売り判定
 # ================================================================
 def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
                   credit_sell_buy_ratio, stop_pct=4, target_pct=8,
@@ -391,18 +387,15 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
             try: return float(str(val).replace(',', ''))
             except: return np.nan
 
-        # ── 200日線との乖離（上に乖離しているほど空売り好機）──
         if diff_pct_200 >= 30:    score += 4; reasons.append(f"200日線大幅上乖離(+{diff_pct_200:.1f}%)")
         elif diff_pct_200 >= 20:  score += 3; reasons.append(f"200日線上乖離(+{diff_pct_200:.1f}%)")
         elif diff_pct_200 >= 10:  score += 2; reasons.append(f"200日線やや上乖離(+{diff_pct_200:.1f}%)")
         elif diff_pct_200 >= 5:   score += 1; reasons.append(f"200日線上(+{diff_pct_200:.1f}%)")
         elif diff_pct_200 < 0:    warnings.append(f"200日線割れ⚠️ 空売り不適({diff_pct_200:.1f}%)")
 
-        # ── MA配列（上昇配列＝過熱感あり＝空売り好機）──
         if ma25 > ma75 > ma200:   score += 2; reasons.append("完全上昇配列（過熱）")
         elif ma25 > ma200:        score += 1; reasons.append("25日線>200日線")
 
-        # ── RSI（高RSIほど過熱＝空売り好機）──
         if rsi >= 75:             score += 3; reasons.append(f"RSI過熱({rsi:.0f})")
         elif rsi >= 65:           score += 2; reasons.append(f"RSIやや過熱({rsi:.0f})")
         elif rsi >= 55:           score += 1; reasons.append(f"RSI高め({rsi:.0f})")
@@ -410,9 +403,9 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
 
         cr = safe_float(credit_ratio)
         if not np.isnan(cr):
-            if cr >= 10:   score += 3; reasons.append(f"信用倍率{cr:.1f}(超有利)")
-            elif cr >= 5:  score += 2; reasons.append(f"信用倍率{cr:.1f}(有利)")
-            elif cr >= 2:  score += 1; reasons.append(f"信用倍率{cr:.1f}")
+            if cr >= 10:    score += 3; reasons.append(f"信用倍率{cr:.1f}(超有利)")
+            elif cr >= 5:   score += 2; reasons.append(f"信用倍率{cr:.1f}(有利)")
+            elif cr >= 2:   score += 1; reasons.append(f"信用倍率{cr:.1f}")
             elif cr <= 1.0: warnings.append(f"信用倍率{cr:.2f}(踏み上げ注意⚠️)")
 
         sc_val = safe_float(credit_sell_change)
@@ -421,7 +414,7 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
             elif sc_val < -10000: warnings.append(f"売り残大幅減少⚠️")
 
         top_score = 0
-        if "被せ線" in top_signs:       top_score = 3
+        if "被せ線" in top_signs:        top_score = 3
         elif "上ヒゲ陰線" in top_signs: top_score = 2
         elif top_signs:                  top_score = 1
         if top_score > 0:
@@ -431,7 +424,6 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
         if macd_dc_recent:    score = min(score+1,15); reasons.append("MACD-DC直近")
         elif macd_below_sig:  score = min(score+1,15); reasons.append("MACD下方向")
 
-        # 200日線を割れている銘柄は空売り不適（すでに下がりきり）
         overheated = diff_pct_200 >= 5
         if not overheated:   status = "⛔ 除外（上乖離不足）"
         elif score >= 9:     status = "🔻 空売り候補"
@@ -703,7 +695,6 @@ with tab_short:
     with col_up1: short_credit_files = st.file_uploader("📂 ① 信用CSV", type=['csv'], accept_multiple_files=True, key="short_credit_csv")
     with col_up2: short_tech_files   = st.file_uploader("📂 ② テクニカルCSV", type=['csv'], accept_multiple_files=True, key="short_tech_csv")
 
-    # CSV未アップロード時はsession_stateをリセット
     if not short_credit_files:
         st.session_state.df_merged = None
     df_merged = st.session_state.df_merged
@@ -721,13 +712,11 @@ with tab_short:
             st.error("❌ 信用CSVの読み込みに失敗しました。")
         else:
             df_credit = pd.concat(dfs_credit, ignore_index=True).drop_duplicates()
-            # コード列を柔軟に検出
             credit_code_cols = [c for c in df_credit.columns if 'コード' in c or 'code' in c.lower()]
             if not credit_code_cols:
                 st.error(f"❌ 信用CSVに「コード」列が見つかりません。列名: {list(df_credit.columns)}")
             else:
                 df_credit['_code'] = df_credit[credit_code_cols[0]].astype(str).str.strip()
-                # 銘柄名列を検出
                 credit_name_cols = [c for c in df_credit.columns if '銘柄名' in c or '会社名' in c or '銘柄' in c]
 
                 if short_tech_files:
@@ -747,13 +736,11 @@ with tab_short:
                         if tech_code_col:
                             df_tech['_code'] = df_tech[tech_code_col[0]].astype(str).str.strip()
                             if tech_name_col:
-                                # mergeしてから列名で安全にアクセス
                                 merge_col = tech_name_col[0]
                                 df_merged = df_credit.merge(
                                     df_tech[['_code', merge_col]].rename(columns={merge_col: '_tech_name'}),
                                     on='_code', how='left'
                                 )
-                                # _tech_name → _nameへ。なければ信用CSV銘柄名 → コードの順でフォールバック
                                 if credit_name_cols:
                                     df_merged['_name'] = df_merged['_tech_name'].fillna(df_merged[credit_name_cols[0]]).fillna(df_merged['_code'])
                                 else:
@@ -763,10 +750,9 @@ with tab_short:
                                 df_merged['_name'] = df_merged[credit_name_cols[0]] if credit_name_cols else df_merged['_code']
                         else:
                             st.error(f"❌ テクニカルCSVにコード列が見つかりません: {list(df_tech.columns)}")
-                else:
-                    # 信用CSVのみ
-                    df_merged = df_credit.copy()
-                    df_merged['_name'] = df_merged[credit_name_cols[0]] if credit_name_cols else df_merged['_code']
+                    else:
+                        df_merged = df_credit.copy()
+                        df_merged['_name'] = df_merged[credit_name_cols[0]] if credit_name_cols else df_merged['_code']
 
                 if df_merged is not None:
                     st.session_state.df_merged = df_merged
@@ -869,14 +855,9 @@ with tab_watch:
     st.subheader("👁 監視銘柄登録（kabu-alert連携）")
     st.caption("ここで登録した銘柄をGitHub Actionsが15分ごとに監視し、パラボリック上転換でDiscordに通知します")
 
-    try:
-        github_token = st.secrets["GITHUB_TOKEN"]
-    except:
-        github_token = ""
-    try:
-        github_repo = st.secrets["GITHUB_REPO"]
-    except:
-        github_repo = "syake1/kabu-alert"
+    # 3大設定（GITHUB_TOKEN, GITHUB_REPO）をSecretsから確実に取得
+    github_token = st.secrets.get("GITHUB_TOKEN", "")
+    github_repo = st.secrets.get("GITHUB_REPO", "syake1/kabu-alert")
 
     if not github_token:
         st.warning("⚠️ Streamlit CloudのSecretsに「GITHUB_TOKEN」を設定してください")
