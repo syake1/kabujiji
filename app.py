@@ -185,6 +185,12 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
                 reason += f" [{last_err[:80]}]"
             return None, reason
 
+        # 株価データに欠損(NaN)行が混じっていると移動平均が計算不能になるため除去
+        hist = hist.dropna(subset=['Open', 'High', 'Low', 'Close'])
+
+        if len(hist) < 210:
+            return None, f"欠損データ除去後に不足({len(hist)}件)"
+
         hist['MA200'] = hist['Close'].rolling(200).mean()
         hist['MA25']  = hist['Close'].rolling(25).mean()
         bb_up, bb_mid, bb_lo = calculate_bb(hist)
@@ -211,7 +217,11 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bb_lo_val     = float(latest['BB_lower'])
 
         if pd.isna(ma200) or pd.isna(ma25):
-            return None, "MA計算不可(NaN)"
+            try:
+                latest_date = str(hist.index[-1])[:10]
+            except Exception:
+                latest_date = "?"
+            return None, f"MA計算不可(NaN) 行数={len(hist)} 最新日={latest_date}"
 
         diff_pct_200 = (current_price - ma200) / ma200 * 100
         diff_pct_25  = (current_price - ma25)  / ma25  * 100
@@ -329,6 +339,9 @@ def analyze_short(ticker_code, company_name, credit_ratio, credit_sell_change,
                 hist = tk.history(period="2y", timeout=10)
                 if len(hist) > 0: break
             except: time.sleep(1)
+        if len(hist) < 200: return None
+
+        hist = hist.dropna(subset=['Open', 'High', 'Low', 'Close'])
         if len(hist) < 200: return None
 
         hist['MA200'] = hist['Close'].rolling(200).mean()
