@@ -6,6 +6,7 @@ import requests
 import google.generativeai as genai
 from datetime import datetime
 import json, os, base64
+from collections import Counter
 
 st.set_page_config(page_title="アンチグラビティ・コア Pro+", layout="wide")
 
@@ -161,22 +162,28 @@ def backtest(hist, stop_pct, target_pct):
 
 # ================================================================
 # 買いスキャン（トレンド条件のみでシンプル抽出）
+# 戻り値: (結果dict または None, 除外理由の文字列)
 # ================================================================
 def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min_price, min_turnover, min_atr_pct, min_bt_trades):
     import time
     try:
         hist = pd.DataFrame()
         tk   = None
+        last_err = ""
         for attempt in range(3):
             try:
                 tk   = yf.Ticker(f"{ticker_code}.T")
                 hist = tk.history(period="2y", timeout=10)
                 if len(hist) > 0:
                     break
-            except:
+            except Exception as e:
+                last_err = str(e)
                 time.sleep(1)
         if len(hist) < 210:
-            return None
+            reason = f"データ取得失敗/不足({len(hist)}件)"
+            if last_err:
+                reason += f" [{last_err[:80]}]"
+            return None, reason
 
         hist['MA200'] = hist['Close'].rolling(200).mean()
         hist['MA25']  = hist['Close'].rolling(25).mean()
@@ -204,7 +211,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bb_lo_val     = float(latest['BB_lower'])
 
         if pd.isna(ma200) or pd.isna(ma25):
-            return None
+            return None, "MA計算不可(NaN)"
 
         diff_pct_200 = (current_price - ma200) / ma200 * 100
         diff_pct_25  = (current_price - ma25)  / ma25  * 100
@@ -212,15 +219,15 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bb_pos       = ((current_price - bb_lo_val) / bb_range * 100) if bb_range > 0 else 50.0
 
         if current_price <= ma200:
-            return None
+            return None, "200日線割れ"
 
         if current_price < min_price:
-            return None
+            return None, "最低株価未満"
 
         avg_volume   = float(hist['Volume'].rolling(5).mean().iloc[-1])
         avg_turnover = current_price * avg_volume / 1_000_000
         if avg_turnover < min_turnover:
-            return None
+            return None, "売買代金不足"
 
         hl   = hist['High'] - hist['Low']
         hc   = abs(hist['High'] - hist['Close'].shift())
@@ -229,10 +236,10 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         atr_val      = tr.rolling(14).mean().iloc[-1]
         atr_pct_val  = atr_val / current_price * 100
         if atr_pct_val < min_atr_pct:
-            return None
+            return None, "ATR%不足"
 
         reversal_signs = check_reversal_sign(hist)
-        
+
         bb_touched = False
         bb_touch_days_ago = 0
         for _bi in range(1, 4):
@@ -247,7 +254,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
                     break
 
         if not bb_touched:
-            return None
+            return None, "BB下限タッチなし"
 
         status = "🔥 買い候補"
         vol_warn = f"⚠️出来高急増({vol_ratio:.1f}x)" if vol_ratio >= vol_mult else ""
@@ -269,7 +276,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         bt = backtest(hist, stop_pct, target_pct)
 
         if bt and bt["取引回数"] < min_bt_trades:
-            return None
+            return None, "BT取引数不足"
 
         sign_label = reversal_signs[0] if reversal_signs else "-"
         if "下ヒゲ陽線" in reversal_signs:
@@ -303,9 +310,9 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
             "BT平均損益":     bt["平均損益"] if bt else "-",
             "BT取引数":       bt["取引回数"] if bt else 0,
             "BT最大DD":       bt["最大DD"]   if bt else "-",
-        }
-    except:
-        return None
+        }, "OK"
+    except Exception as e:
+        return None, f"例外: {e}"
 
 # ================================================================
 # 空売り判定
@@ -527,14 +534,28 @@ with tab_buy:
             t_list = df[[c_col[0], n_col[0]]].dropna()
             if st.button(f"🚀 {len(t_list)}銘柄をスキャン"):
                 results = []; bar = st.progress(0); status_txt = st.empty()
+                fail_reasons = Counter()
                 for i, (idx, row) in enumerate(t_list.iterrows()):
                     code = str(row[c_col[0]]); name = str(row[n_col[0]])
                     status_txt.text(f"スキャン中... {code} {name} ({i+1}/{len(t_list)}) ✅{len(results)}件")
-                    res = analyze_stock(code, name, stop_pct, target_pct, vol_mult, min_price,
+                    res, reason = analyze_stock(code, name, stop_pct, target_pct, vol_mult, min_price,
                                          min_turnover, min_atr_pct, min_bt_trades)
-                    if res: results.append(res)
+                    if res:
+                        results.append(res)
+                    else:
+                        fail_reasons[reason] += 1
                     bar.progress((i + 1) / len(t_list))
                 status_txt.text(f"✅ 完了！ {len(results)}件")
+
+                st.markdown("### 🔍 除外理由の内訳（デバッグ用）")
+                if fail_reasons:
+                    debug_df = pd.DataFrame(
+                        fail_reasons.most_common(), columns=["除外理由", "件数"]
+                    )
+                    st.dataframe(debug_df, use_container_width=True)
+                else:
+                    st.write("除外なし（全銘柄が結果に含まれています）")
+
                 if results:
                     st.session_state.analysis_results = pd.DataFrame(results)
                     st.session_state.saved_at = datetime.now().strftime('%Y/%m/%d %H:%M')
@@ -565,6 +586,8 @@ with tab_buy:
                             st.error(f"❌ Discord通知エラー: {e}")
                     else:
                         st.warning("⚠️ Discord Webhook URLが未入力です（⚙️ システム設定で入力してください）")
+                else:
+                    st.warning("⚠️ 該当銘柄が0件でした。上の「除外理由の内訳」を確認してください。")
 
     if st.session_state.analysis_results is not None:
         res_df = st.session_state.analysis_results
