@@ -161,6 +161,107 @@ def backtest(hist, stop_pct, target_pct):
             "平均損益": f"{avg_pnl:.2f}%", "最大DD": f"{max_dd:.2f}%"}
 
 # ================================================================
+# 買い候補ランキング（ルールベース・根拠が全部見えるスコアリング）
+# ================================================================
+def _parse_pct(val):
+    """'44.4%' や '+1.5%' のような文字列を数値(float)に変換"""
+    try:
+        if val is None:
+            return None
+        s = str(val).replace('%', '').replace('+', '').strip()
+        if s in ('', '-', 'nan'):
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+def _parse_rr(val):
+    """'1:2.0' のようなRRレシオ文字列から後ろの数値だけを取り出す"""
+    try:
+        s = str(val)
+        if ':' not in s:
+            return None
+        return float(s.split(':')[1])
+    except Exception:
+        return None
+
+def rank_buy_candidates(buy_df):
+    """
+    買い候補DataFrameにスコア・順位・スコア内訳を付けて返す。
+    重み付けは全部ここに集約（調整したい場合はここの数値を変える）。
+    """
+    rows = []
+    for _, row in buy_df.iterrows():
+        breakdown = {}
+
+        # ① バックテスト勝率（高いほど加点、最大25点）
+        bt_win = _parse_pct(row.get('BT勝率'))
+        pt = 0.0
+        if bt_win is not None:
+            pt = max(0.0, min(25.0, (bt_win - 30) / 40 * 25))  # 30%=0点, 70%=25点の目安
+        breakdown['BT勝率'] = round(pt, 1)
+
+        # ② バックテスト平均損益（高いほど加点、最大20点）
+        bt_avg = _parse_pct(row.get('BT平均損益'))
+        pt = 0.0
+        if bt_avg is not None:
+            pt = max(0.0, min(20.0, bt_avg / 3 * 20))  # 3%で満点目安
+        breakdown['BT平均損益'] = round(pt, 1)
+
+        # ③ バックテスト取引数（サンプル数が多いほど信頼度が高い、最大10点）
+        bt_n = row.get('BT取引数', 0)
+        try:
+            bt_n = float(bt_n)
+        except Exception:
+            bt_n = 0
+        pt = max(0.0, min(10.0, bt_n / 20 * 10))  # 20回で満点目安
+        breakdown['BT取引数（信頼度）'] = round(pt, 1)
+
+        # ④ RRレシオ（リスクリワード比、高いほど加点、最大20点）
+        rr = _parse_rr(row.get('RRレシオ'))
+        pt = 0.0
+        if rr is not None:
+            pt = max(0.0, min(20.0, (rr - 1) / 2 * 20))  # 1:1=0点, 1:3=20点の目安
+        breakdown['RRレシオ'] = round(pt, 1)
+
+        # ⑤ ATR%（値動きの大きさ、1.5〜3.0%あたりを最適とみなし山型で評価、最大10点）
+        atr = _parse_pct(row.get('ATR%'))
+        pt = 0.0
+        if atr is not None:
+            pt = max(0.0, 10.0 - abs(atr - 2.2) * 4)
+            pt = min(10.0, pt)
+        breakdown['ATR%（値動きの適度さ）'] = round(pt, 1)
+
+        # ⑥ 反発サインの強さ（最大10点）
+        sign = str(row.get('反発サイン', ''))
+        if '🔥' in sign:
+            pt = 10.0
+        elif '⚡' in sign:
+            pt = 7.0
+        elif '↑' in sign:
+            pt = 4.0
+        else:
+            pt = 0.0
+        breakdown['反発サインの強さ'] = pt
+
+        # ⑦ 出来高急増の警告（あれば減点、最大-5点）
+        vol_warn = str(row.get('出来高注意', ''))
+        pt = -5.0 if vol_warn and vol_warn != 'nan' and vol_warn.strip() != '' else 0.0
+        breakdown['出来高急増ペナルティ'] = pt
+
+        total = round(sum(breakdown.values()), 1)
+        rows.append({
+            "コード": row.get('コード'),
+            "会社名": row.get('会社名'),
+            "スコア": total,
+            "内訳": breakdown,
+            "元データ": row,
+        })
+
+    ranked = sorted(rows, key=lambda x: x['スコア'], reverse=True)
+    return ranked
+
+# ================================================================
 # 買いスキャン（トレンド条件のみでシンプル抽出）
 # 戻り値: (結果dict または None, 除外理由の文字列)
 # ================================================================
@@ -611,6 +712,34 @@ with tab_buy:
 
             if not buy_df.empty:
                 if 'チャート' in buy_df.columns: buy_df['📊'] = buy_df['チャート']
+
+                # ---- 🏆 AIランキング（上位2〜3銘柄をルールベースでスコアリング） ----
+                st.subheader("🏆 AIランキング（買い候補から厳選）")
+                st.caption("BT勝率・BT平均損益・RRレシオ・ATR%・反発サインなどをルールベースで採点し、上位のみを表示します。根拠は各カードに表示されます。")
+                top_n = st.radio("上位何銘柄を表示するか", [2, 3], horizontal=True, key="rank_top_n")
+
+                ranked = rank_buy_candidates(buy_df)
+                for i, item in enumerate(ranked[:top_n]):
+                    r = item["元データ"]
+                    medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i+1}位"
+                    with st.container(border=True):
+                        rc1, rc2 = st.columns([1, 3])
+                        with rc1:
+                            st.markdown(f"### {medal} {item['コード']}")
+                            st.markdown(f"**{item['会社名']}**")
+                            st.metric("総合スコア", f"{item['スコア']:.1f} 点")
+                            st.write(f"現在値: {r.get('現在値','-')}円")
+                            st.write(f"損切り: {r.get('損切り価格','-')}円 / 利確: {r.get('利確目標','-')}円")
+                        with rc2:
+                            st.markdown("**スコア内訳**")
+                            breakdown_df = pd.DataFrame(
+                                list(item["内訳"].items()), columns=["評価項目", "点数"]
+                            )
+                            st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+                            if r.get('チャート'):
+                                st.link_button("🔗 TradingViewで見る", r['チャート'])
+
+                st.markdown("---")
 
                 display_cols = ["コード","会社名","判定","現在値",
                                 "BB位置","RSI(14)","MACD","ATR%","売買代金(百万)",
