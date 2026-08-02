@@ -1046,27 +1046,37 @@ with tab_watch:
         st.markdown("---")
 
         st.markdown("**📝 銘柄を追加：**")
-        col1, col2, col3 = st.columns([2, 3, 2])
+        st.caption("銘柄コードだけ入力すればOKです。銘柄名は自動で取得します。")
+        col1, col2 = st.columns([2, 2])
         with col1:
             new_code = st.text_input("銘柄コード", placeholder="例：6507")
         with col2:
-            new_name = st.text_input("銘柄名", placeholder="例：シンフォニア")
-        with col3:
             new_mode = st.selectbox("監視モード", ["both（買い＋空売り）", "buy（買いのみ）", "short（空売りのみ）"])
             mode_val = new_mode.split("（")[0]
 
         if st.button("➕ 監視リストに追加", type="primary"):
-            if not new_code or not new_name:
-                st.error("コードと銘柄名を入力してください")
+            new_code = new_code.strip()
+            if not new_code:
+                st.error("コードを入力してください")
             elif sha is None:
                 st.error("GitHubとの接続に失敗しています")
             else:
+                # コードから銘柄名を自動取得
+                new_name = new_code
+                try:
+                    _tk = yf.Ticker(f"{new_code}.T")
+                    _info = _tk.info
+                    new_name = _info.get('longName') or _info.get('shortName') or new_code
+                except Exception:
+                    pass
+
                 existing_codes = [s['code'] for s in watchlist]
                 if new_code in existing_codes:
                     for s in watchlist:
                         if s['code'] == new_code:
                             s['days'] = s.get('days', 0) + 1
                             s['mode'] = mode_val
+                            s['name'] = new_name
                     st.info(f"✅ {new_code} {new_name} の連続日数を更新しました")
                 else:
                     watchlist.append({
