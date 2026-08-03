@@ -52,14 +52,29 @@ with st.expander("⚙️ システム設定", expanded=False):
     with c6: min_atr_pct   = st.slider("最低ATR%（値幅）", 0.0, 5.0, 1.0, step=0.1)
     with c7: min_bt_trades = st.slider("最低BT取引数", 0, 30, 5, step=1)
 
+    # --- 追加：高値追い除外フィルター ---
+    c8, c9 = st.columns(2)
+    with c8:
+        max_extension_pct = st.slider(
+            "直近安値からの上昇率上限(%)　※超えたら除外", 20, 150, 60, step=5,
+            help="直近60日の安値からこの%以上すでに上昇している銘柄は「上げすぎ」として買い候補から除外します"
+        )
+    with c9:
+        max_ma25_gap_pct = st.slider(
+            "25日線からの乖離率上限(%)　※超えたら除外", 5, 50, 20, step=1,
+            help="25日移動平均線からこの%以上乖離（上に離れすぎ）している銘柄を過熱として除外します"
+        )
+
     st.info(f"""
 **【スキャン条件】**
 1. ✅ 200日線の上（長期上昇トレンド継続中）
 2. ✅ BB下限タッチあり（直近3日以内）
 3. ✅ 最低売買代金・ATR・BT条件クリア
+4. ✅ 高値追いでない（安値比・25日線乖離が上限以内）
 
 💹 売買代金:{min_turnover}百万円以上 📊 ATR:{min_atr_pct}%以上 🔢 BT取引数:{min_bt_trades}回以上
 💀 損切:-{stop_pct}% 🎯 利確:+{target_pct}% 最低株価:{min_price}円以上
+🚫 安値比上昇率上限:+{max_extension_pct}% 🚫 25日線乖離上限:+{max_ma25_gap_pct}%
     """)
 
     st.markdown("---")
@@ -73,6 +88,7 @@ with st.expander("⚙️ システム設定", expanded=False):
 | **ATR%** | 1日の平均的な値幅（株価に対する%）。高いほど動きやすい銘柄 |
 | **売買代金** | 1日の取引金額（百万円）。少ないと売買しにくい薄商い銘柄 |
 | **反発サイン** | 詳細表示・一覧で参考確認するサイン（下ヒゲ陽線🔥 / 包み足⚡ など） |
+| **安値比上昇率** | 直近60日安値から現在値までの上昇率。高すぎると「もう上げすぎ」の可能性 |
     """)
 
 # ================================================================
@@ -249,6 +265,13 @@ def rank_buy_candidates(buy_df):
         pt = -5.0 if vol_warn and vol_warn != 'nan' and vol_warn.strip() != '' else 0.0
         breakdown['出来高急増ペナルティ'] = pt
 
+        # ⑧ 高値追いペナルティ（安値比上昇率が高いほど減点、最大-15点）
+        ext = _parse_pct(row.get('安値比'))
+        pt = 0.0
+        if ext is not None and ext > 30:
+            pt = -min(15.0, (ext - 30) / 30 * 15)
+        breakdown['高値追いペナルティ'] = round(pt, 1)
+
         total = round(sum(breakdown.values()), 1)
         rows.append({
             "コード": row.get('コード'),
@@ -265,7 +288,9 @@ def rank_buy_candidates(buy_df):
 # 買いスキャン（トレンド条件のみでシンプル抽出）
 # 戻り値: (結果dict または None, 除外理由の文字列)
 # ================================================================
-def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min_price, min_turnover, min_atr_pct, min_bt_trades):
+def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min_price,
+                   min_turnover, min_atr_pct, min_bt_trades,
+                   max_extension_pct=60, max_ma25_gap_pct=20):
     import time
     try:
         hist = pd.DataFrame()
@@ -334,6 +359,15 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
 
         if current_price < min_price:
             return None, "最低株価未満"
+
+        # --- 追加：高値追い除外フィルター ---
+        low_60 = float(hist['Low'].tail(60).min())
+        extension_pct = (current_price - low_60) / low_60 * 100 if low_60 > 0 else 0.0
+        if extension_pct > max_extension_pct:
+            return None, f"急騰しすぎ(60日安値比+{extension_pct:.0f}%)"
+
+        if diff_pct_25 > max_ma25_gap_pct:
+            return None, f"25日線乖離しすぎ(+{diff_pct_25:.1f}%)"
 
         avg_volume   = float(hist['Volume'].rolling(5).mean().iloc[-1])
         avg_turnover = current_price * avg_volume / 1_000_000
@@ -416,6 +450,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
             "RRレシオ":        f"1:{rr_ratio}",
             "200日乖離":      f"{diff_pct_200:+.1f}%",
             "25日乖離":       f"{diff_pct_25:+.1f}%",
+            "安値比":         f"{extension_pct:.0f}%",
             "チャート":        f"https://jp.tradingview.com/chart/?symbol=TSE:{ticker_code}",
             "BT勝率":        bt["勝率"]     if bt else "-",
             "BT平均損益":     bt["平均損益"] if bt else "-",
@@ -653,7 +688,8 @@ with tab_buy:
                     code = str(row[c_col[0]]); name = str(row[n_col[0]])
                     status_txt.text(f"スキャン中... {code} {name} ({i+1}/{len(t_list)}) ✅{len(results)}件")
                     res, reason = analyze_stock(code, name, stop_pct, target_pct, vol_mult, min_price,
-                                         min_turnover, min_atr_pct, min_bt_trades)
+                                         min_turnover, min_atr_pct, min_bt_trades,
+                                         max_extension_pct, max_ma25_gap_pct)
                     if res:
                         results.append(res)
                     else:
@@ -715,7 +751,7 @@ with tab_buy:
 
                 # ---- 🏆 AIランキング（上位2〜3銘柄をルールベースでスコアリング） ----
                 st.subheader("🏆 AIランキング（買い候補から厳選）")
-                st.caption("BT勝率・BT平均損益・RRレシオ・ATR%・反発サインなどをルールベースで採点し、上位のみを表示します。根拠は各カードに表示されます。")
+                st.caption("BT勝率・BT平均損益・RRレシオ・ATR%・反発サイン・高値追い度などをルールベースで採点し、上位のみを表示します。根拠は各カードに表示されます。")
                 top_n = st.radio("上位何銘柄を表示するか", [2, 3], horizontal=True, key="rank_top_n")
 
                 ranked = rank_buy_candidates(buy_df)
@@ -730,6 +766,7 @@ with tab_buy:
                             st.metric("総合スコア", f"{item['スコア']:.1f} 点")
                             st.write(f"現在値: {r.get('現在値','-')}円")
                             st.write(f"損切り: {r.get('損切り価格','-')}円 / 利確: {r.get('利確目標','-')}円")
+                            st.write(f"安値比: {r.get('安値比','-')}")
                         with rc2:
                             st.markdown("**スコア内訳**")
                             breakdown_df = pd.DataFrame(
@@ -744,7 +781,7 @@ with tab_buy:
                 display_cols = ["コード","会社名","判定","現在値",
                                 "BB位置","RSI(14)","MACD","ATR%","売買代金(百万)",
                                 "反発サイン","出来高注意","損切り価格","利確目標","RRレシオ",
-                                "200日乖離","25日乖離","BT勝率","BT平均損益","BT取引数","BT最大DD","📊"]
+                                "200日乖離","25日乖離","安値比","BT勝率","BT平均損益","BT取引数","BT最大DD","📊"]
                 disp = [c for c in display_cols if c in buy_df.columns]
                 st.dataframe(buy_df[disp], use_container_width=True,
                              column_config={
@@ -830,6 +867,7 @@ with tab_buy:
                             st.markdown(f"📊 BB: {row.get('BB位置','-')}")
                             st.markdown(f"🕯 サイン: {row.get('反発サイン','-')}")
                             st.markdown(f"📈 ATR: {row.get('ATR%','-')}")
+                            st.markdown(f"📏 安値比: {row.get('安値比','-')}")
                             st.markdown(f"BT勝率: {row.get('BT勝率','-')}")
                             if row.get('チャート'): st.link_button("🔗 TradingView", row['チャート'])
             else:
