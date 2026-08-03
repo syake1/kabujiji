@@ -65,6 +65,18 @@ with st.expander("⚙️ システム設定", expanded=False):
             help="25日移動平均線からこの%以上乖離（上に離れすぎ）している銘柄を過熱として除外します"
         )
 
+    c10, c11 = st.columns(2)
+    with c10:
+        exclude_ma25_down = st.checkbox(
+            "25日線が下向きの銘柄を除外", value=True,
+            help="5営業日前と比較して25日移動平均線が下降している銘柄は、短期トレンドが崩れているとして除外します"
+        )
+    with c11:
+        min_bt_win_rate = st.slider(
+            "最低BT勝率(%)　※未満は除外", 0, 80, 40, step=5,
+            help="バックテストの勝率がこの%未満の銘柄は、過去の同条件エントリーでの成績が悪いとして除外します"
+        )
+
     st.info(f"""
 **【スキャン条件】**
 1. ✅ 200日線の上（長期上昇トレンド継続中）
@@ -75,6 +87,7 @@ with st.expander("⚙️ システム設定", expanded=False):
 💹 売買代金:{min_turnover}百万円以上 📊 ATR:{min_atr_pct}%以上 🔢 BT取引数:{min_bt_trades}回以上
 💀 損切:-{stop_pct}% 🎯 利確:+{target_pct}% 最低株価:{min_price}円以上
 🚫 安値比上昇率上限:+{max_extension_pct}% 🚫 25日線乖離上限:+{max_ma25_gap_pct}%
+🚫 25日線下向き除外:{'ON' if exclude_ma25_down else 'OFF'} 🚫 最低BT勝率:{min_bt_win_rate}%
     """)
 
     st.markdown("---")
@@ -290,7 +303,8 @@ def rank_buy_candidates(buy_df):
 # ================================================================
 def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min_price,
                    min_turnover, min_atr_pct, min_bt_trades,
-                   max_extension_pct=60, max_ma25_gap_pct=20):
+                   max_extension_pct=60, max_ma25_gap_pct=20,
+                   exclude_ma25_down=True, min_bt_win_rate=40):
     import time
     try:
         hist = pd.DataFrame()
@@ -369,6 +383,13 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         if diff_pct_25 > max_ma25_gap_pct:
             return None, f"25日線乖離しすぎ(+{diff_pct_25:.1f}%)"
 
+        # --- 追加：25日線が下向きの銘柄を除外 ---
+        ma25_series = hist['MA25'].dropna()
+        if exclude_ma25_down and len(ma25_series) >= 6:
+            ma25_5ago = float(ma25_series.iloc[-6])
+            if ma25 < ma25_5ago:
+                return None, f"25日線下向き({ma25_5ago:.0f}→{ma25:.0f})"
+
         avg_volume   = float(hist['Volume'].rolling(5).mean().iloc[-1])
         avg_turnover = current_price * avg_volume / 1_000_000
         if avg_turnover < min_turnover:
@@ -422,6 +443,14 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
 
         if bt and bt["取引回数"] < min_bt_trades:
             return None, "BT取引数不足"
+
+        if bt:
+            try:
+                bt_win_val = float(str(bt["勝率"]).replace('%', ''))
+                if bt_win_val < min_bt_win_rate:
+                    return None, f"BT勝率不足({bt['勝率']})"
+            except Exception:
+                pass
 
         sign_label = reversal_signs[0] if reversal_signs else "-"
         if "下ヒゲ陽線" in reversal_signs:
@@ -689,7 +718,8 @@ with tab_buy:
                     status_txt.text(f"スキャン中... {code} {name} ({i+1}/{len(t_list)}) ✅{len(results)}件")
                     res, reason = analyze_stock(code, name, stop_pct, target_pct, vol_mult, min_price,
                                          min_turnover, min_atr_pct, min_bt_trades,
-                                         max_extension_pct, max_ma25_gap_pct)
+                                         max_extension_pct, max_ma25_gap_pct,
+                                         exclude_ma25_down, min_bt_win_rate)
                     if res:
                         results.append(res)
                     else:
