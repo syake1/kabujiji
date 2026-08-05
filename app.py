@@ -1162,11 +1162,11 @@ with tab_watch:
                 hc4.markdown("**登録時比**")
                 hc5.markdown("**日数/モード**")
 
-                for row in watch_rows:
+                for row_idx, row in enumerate(watch_rows):
                     c1, c2, c3, c4, c5 = st.columns([0.6, 2.2, 1.2, 1.2, 1])
                     default_check = row["chg_pct"] is not None and row["chg_pct"] >= UP_THRESHOLD
                     with c1:
-                        checked = st.checkbox("削除", value=default_check, key=f"del_chk_{row['code']}", label_visibility="collapsed")
+                        checked = st.checkbox("削除", value=default_check, key=f"del_chk_{row_idx}_{row['code']}", label_visibility="collapsed")
                         if checked:
                             to_delete_codes.append(row["code"])
                     with c2:
