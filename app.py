@@ -422,6 +422,14 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
         if not bb_touched:
             return None, "BB下限タッチなし"
 
+        # --- 追加：BB下限タッチ後、すでに中央線（当初の反発目標）を
+        #     上抜けてしまっている銘柄を除外 ---
+        # BB下限タッチは「逆張りエントリーの根拠」だが、その後すでに
+        # 中央線まで戻ってしまっている場合、反発の旨味を取り終えた後であり
+        # 「これから買う」には遅すぎる（高値掴みのリスクが高い）ため除外する。
+        if current_price > bb_mid_val:
+            return None, f"BB中央線を上抜け済み(反発完了・逆張り機会終了) 現在値位置:{bb_pos:.0f}%"
+
         status = "🔥 買い候補"
         vol_warn = f"⚠️出来高急増({vol_ratio:.1f}x)" if vol_ratio >= vol_mult else ""
 
@@ -671,6 +679,19 @@ def update_watchlist_to_github(token, repo, watchlist_data, sha):
         return res.status_code == 200
     except:
         return False
+
+@st.cache_data(ttl=300)
+def get_watch_current_price(code):
+    """監視銘柄一覧用：現在値だけを軽量に取得する（5分キャッシュ）"""
+    try:
+        tk = yf.Ticker(f"{code}.T")
+        hist = tk.history(period="5d")
+        hist = hist.dropna(subset=['Close'])
+        if hist.empty:
+            return None
+        return float(hist['Close'].iloc[-1])
+    except Exception:
+        return None
 
 # ================================================================
 # タブ構成
@@ -1104,8 +1125,80 @@ with tab_watch:
 
             if watchlist:
                 st.markdown("**現在の監視銘柄：**")
-                watch_df = pd.DataFrame(watchlist)
-                st.dataframe(watch_df, use_container_width=True)
+
+                UP_THRESHOLD = st.slider(
+                    "この上昇率(%)以上の銘柄には自動でチェックを入れる",
+                    1, 30, 5, step=1,
+                    help="登録時の株価からこの%以上値上がりしている銘柄は「もう上げすぎ」として、下のチェックボックスにあらかじめチェックが入ります。"
+                )
+                st.caption("チェックを入れた銘柄をまとめて削除できます。登録時の株価が記録されていない古い銘柄は「登録時株価なし」と表示され、自動チェックの対象外です。")
+
+                watch_rows = []
+                with st.spinner("現在値を取得中..."):
+                    for s in watchlist:
+                        code = s.get('code')
+                        name = s.get('name', code)
+                        added_price = s.get('added_price')
+                        cur_price = get_watch_current_price(code)
+                        chg_pct = None
+                        if cur_price is not None and added_price:
+                            try:
+                                chg_pct = (cur_price - float(added_price)) / float(added_price) * 100
+                            except Exception:
+                                chg_pct = None
+                        watch_rows.append({
+                            "code": code, "name": name,
+                            "current_price": cur_price,
+                            "added_price": added_price,
+                            "chg_pct": chg_pct,
+                            "days": s.get('days'), "mode": s.get('mode')
+                        })
+
+                to_delete_codes = []
+                hc1, hc2, hc3, hc4, hc5 = st.columns([0.6, 2.2, 1.2, 1.2, 1])
+                hc1.markdown("**削除**")
+                hc2.markdown("**銘柄**")
+                hc3.markdown("**現在値**")
+                hc4.markdown("**登録時比**")
+                hc5.markdown("**日数/モード**")
+
+                for row in watch_rows:
+                    c1, c2, c3, c4, c5 = st.columns([0.6, 2.2, 1.2, 1.2, 1])
+                    default_check = row["chg_pct"] is not None and row["chg_pct"] >= UP_THRESHOLD
+                    with c1:
+                        checked = st.checkbox("削除", value=default_check, key=f"del_chk_{row['code']}", label_visibility="collapsed")
+                        if checked:
+                            to_delete_codes.append(row["code"])
+                    with c2:
+                        st.markdown(f"{row['code']} {row['name']}")
+                    with c3:
+                        price_txt = f"¥{row['current_price']:,.0f}" if row['current_price'] is not None else "取得失敗"
+                        st.markdown(price_txt)
+                    with c4:
+                        if row["chg_pct"] is not None:
+                            arrow = "🔺" if row["chg_pct"] >= 0 else "🔻"
+                            st.markdown(f"{arrow} {row['chg_pct']:+.1f}%")
+                        else:
+                            st.markdown("登録時株価なし")
+                    with c5:
+                        st.markdown(f"{row['days']}日 / {row['mode']}")
+
+                if st.button(f"🗑 チェックした銘柄を削除（{len(to_delete_codes)}件）",
+                             type="secondary", disabled=(len(to_delete_codes) == 0)):
+                    if sha is None:
+                        st.error("GitHubとの接続に失敗しています")
+                    else:
+                        watchlist = [s for s in watchlist if s['code'] not in to_delete_codes]
+                        new_data = {
+                            "watchlist": watchlist,
+                            "updated":   datetime.now().strftime('%Y/%m/%d %H:%M'),
+                            "count":     len(watchlist)
+                        }
+                        if update_watchlist_to_github(github_token, github_repo, new_data, sha):
+                            st.success(f"✅ {len(to_delete_codes)}銘柄を削除しました")
+                            st.rerun()
+                        else:
+                            st.error("❌ GitHub更新に失敗しました")
         else:
             watchlist = []
             sha       = None
@@ -1114,7 +1207,7 @@ with tab_watch:
         st.markdown("---")
 
         st.markdown("**📝 銘柄を追加：**")
-        st.caption("銘柄コードだけ入力すればOKです。銘柄名は自動で取得します。")
+        st.caption("銘柄コードだけ入力すればOKです。銘柄名・登録時株価は自動で取得します。")
         col1, col2 = st.columns([2, 2])
         with col1:
             new_code = st.text_input("銘柄コード", placeholder="例：6507")
@@ -1138,6 +1231,9 @@ with tab_watch:
                 except Exception:
                     pass
 
+                # 登録時の株価も記録しておく（後で「上がった銘柄」を判定するため）
+                new_price = get_watch_current_price(new_code)
+
                 existing_codes = [s['code'] for s in watchlist]
                 if new_code in existing_codes:
                     for s in watchlist:
@@ -1145,13 +1241,16 @@ with tab_watch:
                             s['days'] = s.get('days', 0) + 1
                             s['mode'] = mode_val
                             s['name'] = new_name
+                            if new_price is not None:
+                                s['added_price'] = new_price
                     st.info(f"✅ {new_code} {new_name} の連続日数を更新しました")
                 else:
                     watchlist.append({
                         "code": new_code,
                         "name": new_name,
                         "days": 1,
-                        "mode": mode_val
+                        "mode": mode_val,
+                        "added_price": new_price
                     })
                     st.success(f"✅ {new_code} {new_name} を追加しました")
 
@@ -1162,26 +1261,6 @@ with tab_watch:
                 }
                 if update_watchlist_to_github(github_token, github_repo, new_data, sha):
                     st.success("✅ GitHubを更新しました！次の15分チェックから監視開始します")
-                    st.rerun()
-                else:
-                    st.error("❌ GitHub更新に失敗しました")
-
-        st.markdown("---")
-
-        if watchlist:
-            st.markdown("**🗑 銘柄を削除：**")
-            del_options = [f"{s['code']} {s['name']}" for s in watchlist]
-            del_target  = st.selectbox("削除する銘柄を選択", del_options)
-            if st.button("🗑 削除", type="secondary"):
-                del_code = del_target.split(" ")[0]
-                watchlist = [s for s in watchlist if s['code'] != del_code]
-                new_data = {
-                    "watchlist": watchlist,
-                    "updated":   datetime.now().strftime('%Y/%m/%d %H:%M'),
-                    "count":     len(watchlist)
-                }
-                if update_watchlist_to_github(github_token, github_repo, new_data, sha):
-                    st.success(f"✅ {del_target} を削除しました")
                     st.rerun()
                 else:
                     st.error("❌ GitHub更新に失敗しました")
@@ -1205,16 +1284,24 @@ with tab_watch:
                         for _, row in buy_df.iterrows():
                             code = str(row['コード'])
                             name = str(row['会社名'])
+                            price = row.get('現在値')
+                            try:
+                                price = float(price) if price is not None else None
+                            except Exception:
+                                price = None
                             if code in existing_codes:
                                 for s in watchlist:
                                     if s['code'] == code:
                                         s['days'] = s.get('days', 0) + 1
+                                        if price is not None:
+                                            s['added_price'] = price
                             else:
                                 watchlist.append({
                                     "code": code,
                                     "name": name,
                                     "days": 1,
-                                    "mode": "both"
+                                    "mode": "both",
+                                    "added_price": price
                                 })
                                 added += 1
 
