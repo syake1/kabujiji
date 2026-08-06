@@ -77,6 +77,13 @@ with st.expander("⚙️ システム設定", expanded=False):
             help="バックテストの勝率がこの%未満の銘柄は、過去の同条件エントリーでの成績が悪いとして除外します"
         )
 
+    max_bounce_from_touch_pct = st.slider(
+        "BB下限タッチ日からの上昇率上限(%)　※超えたら除外", 1, 20, 5, step=1,
+        help="BB下限タッチを検知した日の安値からこの%以上すでに株価が戻っている銘柄は、"
+             "「底値からもう反発済み」として除外します。中央線に届いていなくても、"
+             "タッチ直後の底値から一定以上戻ってしまうと高値掴みリスクが高いためです。"
+    )
+
     st.info(f"""
 **【スキャン条件】**
 1. ✅ 200日線の上（長期上昇トレンド継続中）
@@ -88,6 +95,7 @@ with st.expander("⚙️ システム設定", expanded=False):
 💀 損切:-{stop_pct}% 🎯 利確:+{target_pct}% 最低株価:{min_price}円以上
 🚫 安値比上昇率上限:+{max_extension_pct}% 🚫 25日線乖離上限:+{max_ma25_gap_pct}%
 🚫 25日線下向き除外:{'ON' if exclude_ma25_down else 'OFF'} 🚫 最低BT勝率:{min_bt_win_rate}%
+🚫 タッチ日からの戻り上限:+{max_bounce_from_touch_pct}%
     """)
 
     st.markdown("---")
@@ -304,7 +312,8 @@ def rank_buy_candidates(buy_df):
 def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min_price,
                    min_turnover, min_atr_pct, min_bt_trades,
                    max_extension_pct=60, max_ma25_gap_pct=20,
-                   exclude_ma25_down=True, min_bt_win_rate=40):
+                   exclude_ma25_down=True, min_bt_win_rate=40,
+                   max_bounce_from_touch_pct=5):
     import time
     try:
         hist = pd.DataFrame()
@@ -408,6 +417,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
 
         bb_touched = False
         bb_touch_days_ago = 0
+        bb_touch_low = None
         for _bi in range(1, 4):
             if len(hist) > _bi:
                 _row   = hist.iloc[-_bi]
@@ -417,10 +427,21 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
                 if _low <= _bb_lo * 1.005 or _close <= _bb_lo * 1.005:
                     bb_touched        = True
                     bb_touch_days_ago = _bi
+                    bb_touch_low      = _low
                     break
 
         if not bb_touched:
             return None, "BB下限タッチなし"
+
+        # --- 追加：BB下限タッチ日の安値から、現在値がすでに一定以上
+        #     戻ってしまっている銘柄を除外 ---
+        # 中央線に届いていなくても、タッチ直後の底値から大きく戻った後だと
+        # 「これから買う」には遅く、高値掴みのリスクが高いため除外する。
+        bounce_from_touch_pct = 0.0
+        if bb_touch_low and bb_touch_low > 0:
+            bounce_from_touch_pct = (current_price - bb_touch_low) / bb_touch_low * 100
+            if bounce_from_touch_pct > max_bounce_from_touch_pct:
+                return None, f"タッチ日安値から戻りすぎ(+{bounce_from_touch_pct:.1f}%)"
 
         # --- 追加：BB下限タッチ後、すでに中央線（当初の反発目標）を
         #     上抜けてしまっている銘柄を除外 ---
@@ -475,7 +496,7 @@ def analyze_stock(ticker_code, company_name, stop_pct, target_pct, vol_mult, min
             "会社名":        company_name,
             "判定":          status,
             "現在値":        round(current_price, 1),
-            "BB位置":        f"{bb_pos:.0f}%({bb_touch_days_ago}日前タッチ)" if bb_touched else f"{bb_pos:.0f}%",
+            "BB位置":        f"{bb_pos:.0f}%({bb_touch_days_ago}日前タッチ/戻り+{bounce_from_touch_pct:.1f}%)" if bb_touched else f"{bb_pos:.0f}%",
             "RSI(14)":       round(rsi, 1),
             "MACD":            macd_label,
             "ATR%":            f"{atr_pct}%",
@@ -878,7 +899,8 @@ with tab_buy:
                     res, reason = analyze_stock(code, name, stop_pct, target_pct, vol_mult, min_price,
                                          min_turnover, min_atr_pct, min_bt_trades,
                                          max_extension_pct, max_ma25_gap_pct,
-                                         exclude_ma25_down, min_bt_win_rate)
+                                         exclude_ma25_down, min_bt_win_rate,
+                                         max_bounce_from_touch_pct)
                     if res:
                         results.append(res)
                     else:
