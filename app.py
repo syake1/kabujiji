@@ -773,13 +773,13 @@ def parse_pasted_stock_table(raw_text):
         c = str(col).strip()
         if '銘柄コード' in c or 'コード' in c:
             rename_map[col] = 'code'
-        elif '銘柄名' in c or '銘柄' in c:
+        elif '銘柄名' in c or '会社名' in c or '銘柄' in c:
             rename_map[col] = 'name'
-        elif '終値' in c:
+        elif '終値' in c or '現在値' in c:
             rename_map[col] = 'close'
         elif '前日比率' in c or '騰落率' in c:
             rename_map[col] = 'pct'
-        elif '前日比' in c:
+        elif c == '前日比':
             rename_map[col] = 'diff'
     df = df.rename(columns=rename_map)
 
@@ -1496,15 +1496,41 @@ with tab_track:
         with colR:
             st.write("")
 
-        pasted = st.text_area(
-            "SBIの株価一覧をそのまま貼り付け（銘柄コード／銘柄名／終値／前日比／前日比率 の列を含む表）",
-            height=200, key="track_paste"
-        )
+        upload_tab, paste_tab = st.tabs(["📂 CSVアップロード", "📋 貼り付け"])
+
+        raw_df_from_csv = None
+        with upload_tab:
+            csv_file = st.file_uploader(
+                "kabujijiのスキャン結果CSV（買い候補_*.csv）をアップロード",
+                type=['csv'], key="track_csv_upload"
+            )
+            if csv_file is not None:
+                for enc in ['utf-8-sig', 'shift-jis', 'utf-8']:
+                    try:
+                        csv_file.seek(0)
+                        raw_df_from_csv = pd.read_csv(csv_file, encoding=enc)
+                        break
+                    except Exception:
+                        continue
+                if raw_df_from_csv is None:
+                    st.error("❌ CSVの読み込みに失敗しました")
+                else:
+                    st.success(f"✅ {len(raw_df_from_csv)}銘柄を読み込みました")
+                    st.dataframe(raw_df_from_csv, use_container_width=True, height=200)
+
+        with paste_tab:
+            pasted = st.text_area(
+                "SBIの株価一覧をそのまま貼り付け（銘柄コード／銘柄名／終値／前日比／前日比率 の列を含む表）",
+                height=200, key="track_paste"
+            )
 
         if st.button("➕ この一覧をトラッキングに追加", type="primary"):
-            parsed = parse_pasted_stock_table(pasted)
+            if raw_df_from_csv is not None:
+                parsed = parse_pasted_stock_table(raw_df_from_csv.to_csv(index=False))
+            else:
+                parsed = parse_pasted_stock_table(pasted)
             if parsed is None or parsed.empty:
-                st.error("❌ 表を認識できませんでした。列名（銘柄コード・銘柄名・終値など）を含めて貼り付けてください")
+                st.error("❌ 表を認識できませんでした。CSVをアップロードするか、列名（銘柄コード・銘柄名・終値/現在値など）を含めて貼り付けてください")
             else:
                 tracking_data, sha = get_tracking_from_github(track_token, track_repo)
                 if tracking_data is None:
