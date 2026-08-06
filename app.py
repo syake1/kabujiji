@@ -4,7 +4,7 @@ import numpy as np
 import yfinance as yf
 import requests
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetime, timedelta
 import json, os, base64
 from collections import Counter
 
@@ -680,6 +680,144 @@ def update_watchlist_to_github(token, repo, watchlist_data, sha):
     except:
         return False
 
+# ================================================================
+# 買い銘柄トラッキング機能：GitHub連携＆価格取得
+# ================================================================
+TRACKING_FILE = "tracking.json"
+
+def get_tracking_from_github(token, repo):
+    try:
+        url = f"https://api.github.com/repos/{repo}/contents/{TRACKING_FILE}"
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            data    = res.json()
+            content = base64.b64decode(data['content']).decode('utf-8')
+            return json.loads(content), data['sha']
+        elif res.status_code == 404:
+            return {"entries": []}, None  # ファイル未作成
+        return None, None
+    except:
+        return None, None
+
+def save_tracking_to_github(token, repo, tracking_data, sha):
+    try:
+        url     = f"https://api.github.com/repos/{repo}/contents/{TRACKING_FILE}"
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        content = json.dumps(tracking_data, ensure_ascii=False, indent=2)
+        encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+        payload = {
+            "message": f"トラッキング更新 {datetime.now().strftime('%Y/%m/%d %H:%M')}",
+            "content": encoded,
+        }
+        if sha:
+            payload["sha"] = sha
+        res = requests.put(url, headers=headers, json=payload)
+        return res.status_code in (200, 201)
+    except:
+        return False
+
+@st.cache_data(ttl=3600)
+def get_close_price_on_date(code, date_str):
+    """指定日以前で直近の営業日終値を取得（過去日は結果が変わらないので1時間キャッシュ）"""
+    try:
+        target = pd.Timestamp(date_str)
+        tk = yf.Ticker(f"{code}.T")
+        hist = tk.history(start=(target - pd.Timedelta(days=10)).strftime('%Y-%m-%d'),
+                           end=(target + pd.Timedelta(days=2)).strftime('%Y-%m-%d'))
+        hist = hist.dropna(subset=['Close'])
+        if hist.empty:
+            return None
+        hist = hist[hist.index.date <= target.date()]
+        if hist.empty:
+            return None
+        return float(hist['Close'].iloc[-1])
+    except Exception:
+        return None
+
+def parse_pasted_stock_table(raw_text):
+    """タブ区切り・カンマ区切り両対応でSBI貼り付けテーブルをパース"""
+    import io
+    raw_text = raw_text.strip()
+    if not raw_text:
+        return None
+    try:
+        df = pd.read_csv(io.StringIO(raw_text), sep=None, engine='python')
+    except Exception:
+        return None
+
+    # 列名のゆらぎを吸収
+    rename_map = {}
+    for col in df.columns:
+        c = str(col).strip()
+        if '銘柄コード' in c or 'コード' in c:
+            rename_map[col] = 'code'
+        elif '銘柄名' in c or '銘柄' in c:
+            rename_map[col] = 'name'
+        elif '終値' in c:
+            rename_map[col] = 'close'
+        elif '前日比率' in c or '騰落率' in c:
+            rename_map[col] = 'pct'
+        elif '前日比' in c:
+            rename_map[col] = 'diff'
+    df = df.rename(columns=rename_map)
+
+    required = ['code', 'name', 'close']
+    if not all(c in df.columns for c in required):
+        return None
+
+    df['code'] = df['code'].astype(str).str.strip()
+    df['close'] = pd.to_numeric(df['close'].astype(str).str.replace(',', ''), errors='coerce')
+    if 'pct' in df.columns:
+        df['pct'] = df['pct'].astype(str).str.replace('%', '').str.replace('+', '')
+        df['pct'] = pd.to_numeric(df['pct'], errors='coerce')
+    return df.dropna(subset=['code', 'close'])
+
+def build_tracking_display(entries):
+    """トラッキング中の全銘柄について、D+1〜D+5の株価・騰落率を計算して表を作る"""
+    rows = []
+    updated_any = False
+    today = pd.Timestamp.now().normalize()
+
+    for e in entries:
+        entry_date = pd.Timestamp(e['entry_date'])
+        row = {
+            "銘柄": f"{e['code']} {e['name']}",
+            "登録日": entry_date.strftime('%m/%d'),
+            "登録時終値": e['entry_price'],
+        }
+        bdays = pd.bdate_range(start=entry_date, periods=6)[1:6]  # D+1〜D+5
+        day_prices = e.setdefault('day_prices', {})
+        last_valid_pct = None
+
+        for i, d in enumerate(bdays, start=1):
+            key = f"d{i}"
+            if d > today:
+                row[f"D+{i}"] = "―"
+                continue
+            if key not in day_prices:
+                price = get_close_price_on_date(e['code'], d.strftime('%Y-%m-%d'))
+                if price is not None:
+                    day_prices[key] = price
+                    updated_any = True
+            price = day_prices.get(key)
+            if price is not None:
+                pct = (price - e['entry_price']) / e['entry_price'] * 100
+                last_valid_pct = pct
+                arrow = "🔺" if pct >= 0 else "🔻"
+                row[f"D+{i}"] = f"{arrow}{pct:+.1f}%"
+            else:
+                row[f"D+{i}"] = "取得中"
+
+        row["状況"] = "追跡中" if bdays[-1] > today else "完了"
+        row["_sort"] = entry_date
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+    return df, updated_any
+
 @st.cache_data(ttl=300)
 def get_watch_current_price(code):
     """監視銘柄一覧用：現在値だけを軽量に取得する（5分キャッシュ）"""
@@ -697,8 +835,8 @@ def get_watch_current_price(code):
 # タブ構成
 # ================================================================
 st.markdown("---")
-tab_buy, tab_short, tab_ai, tab_watch = st.tabs([
-    "📈 買いスキャン", "🔻 空売りスキャン", "📰 AIニュース分析", "👁 監視銘柄登録"
+tab_buy, tab_short, tab_ai, tab_watch, tab_track = st.tabs([
+    "📈 買いスキャン", "🔻 空売りスキャン", "📰 AIニュース分析", "👁 監視銘柄登録", "📋 買い銘柄トラッキング"
 ])
 
 # ================================================================
@@ -1315,3 +1453,118 @@ with tab_watch:
                             st.rerun()
                         else:
                             st.error("❌ GitHub更新に失敗しました")
+
+# ================================================================
+# タブ5: 買い銘柄トラッキング（貼り付け→自動で1週間の値動きを追跡）
+# ================================================================
+with tab_track:
+    st.subheader("📋 買い銘柄トラッキング")
+    st.caption("その日の買い候補（SBIの株価一覧）を貼り付けると、翌営業日から5営業日分の値動きを自動追跡します。"
+               "同じ銘柄が追跡期間中に再度貼り付けられた場合は、重複登録せず元の追跡を継続します。")
+
+    track_token = st.secrets.get("GITHUB_TOKEN", "")
+    track_repo  = st.secrets.get("GITHUB_REPO_TRACKING", "syake1/kabujiji")
+
+    if not track_token:
+        st.warning("⚠️ Streamlit CloudのSecretsに「GITHUB_TOKEN」を設定してください（監視銘柄登録タブと共通のトークンでOK）")
+    else:
+        colL, colR = st.columns([2, 1])
+        with colL:
+            entry_date_input = st.date_input("この銘柄一覧の対象日", value=datetime.now())
+        with colR:
+            st.write("")
+
+        pasted = st.text_area(
+            "SBIの株価一覧をそのまま貼り付け（銘柄コード／銘柄名／終値／前日比／前日比率 の列を含む表）",
+            height=200, key="track_paste"
+        )
+
+        if st.button("➕ この一覧をトラッキングに追加", type="primary"):
+            parsed = parse_pasted_stock_table(pasted)
+            if parsed is None or parsed.empty:
+                st.error("❌ 表を認識できませんでした。列名（銘柄コード・銘柄名・終値など）を含めて貼り付けてください")
+            else:
+                tracking_data, sha = get_tracking_from_github(track_token, track_repo)
+                if tracking_data is None:
+                    st.error("❌ GitHubからのトラッキングデータ取得に失敗しました")
+                else:
+                    entries = tracking_data.get("entries", [])
+                    entry_date_str = entry_date_input.strftime('%Y-%m-%d')
+                    today_ts = pd.Timestamp.now().normalize()
+
+                    added, skipped = 0, 0
+                    for _, r in parsed.iterrows():
+                        code = str(r['code']).strip()
+                        name = str(r['name']).strip()
+                        close = float(r['close'])
+
+                        # 重複チェック：同一銘柄がまだ追跡期間中（登録日から5営業日以内）なら追加しない
+                        is_active_duplicate = False
+                        for e in entries:
+                            if e['code'] == code:
+                                e_date = pd.Timestamp(e['entry_date'])
+                                bdays_end = pd.bdate_range(start=e_date, periods=6)[-1]
+                                if today_ts <= bdays_end:
+                                    is_active_duplicate = True
+                                    break
+                        if is_active_duplicate:
+                            skipped += 1
+                            continue
+
+                        entries.append({
+                            "code": code,
+                            "name": name,
+                            "entry_date": entry_date_str,
+                            "entry_price": close,
+                            "day_prices": {}
+                        })
+                        added += 1
+
+                    tracking_data["entries"] = entries
+                    if save_tracking_to_github(track_token, track_repo, tracking_data, sha):
+                        msg = f"✅ {added}銘柄を追加しました"
+                        if skipped:
+                            msg += f"（{skipped}銘柄は追跡中のため重複スキップ）"
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error("❌ GitHubへの保存に失敗しました")
+
+        st.markdown("---")
+        st.markdown("**📊 トラッキング一覧**")
+
+        tracking_data, sha = get_tracking_from_github(track_token, track_repo)
+        if tracking_data is None:
+            st.error("❌ トラッキングデータの取得に失敗しました")
+        else:
+            entries = tracking_data.get("entries", [])
+            if not entries:
+                st.info("まだ登録された銘柄がありません")
+            else:
+                with st.spinner("値動きを取得中..."):
+                    display_df, updated_any = build_tracking_display(entries)
+
+                if updated_any:
+                    tracking_data["entries"] = entries
+                    save_tracking_to_github(track_token, track_repo, tracking_data, sha)
+
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+                csv_bytes = display_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 CSVでダウンロード", csv_bytes, "tracking_result.csv", "text/csv")
+
+                with st.expander("🗑 登録済み銘柄の削除"):
+                    del_options = [f"{e['code']} {e['name']}（登録日:{e['entry_date']}）" for e in entries]
+                    to_delete = st.multiselect("削除する銘柄を選択", del_options)
+                    if st.button("選択した銘柄を削除"):
+                        if to_delete:
+                            keep = []
+                            for e, label in zip(entries, del_options):
+                                if label not in to_delete:
+                                    keep.append(e)
+                            tracking_data["entries"] = keep
+                            if save_tracking_to_github(track_token, track_repo, tracking_data, sha):
+                                st.success("削除しました")
+                                st.rerun()
+                            else:
+                                st.error("削除に失敗しました")
