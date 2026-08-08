@@ -5,14 +5,18 @@
       "name": "雪印メグミルク",
       "entry_date": "2026-08-06",
       "entry_price": 3685.0,
-      "day_prices": {}
+      "day_prices": {
+        "d1": 3655.0
+      }
     },
     {
       "code": "9031",
       "name": "西日本鉄道",
       "entry_date": "2026-08-06",
       "entry_price": 2956.0,
-      "day_prices": {}
+      "day_prices": {
+        "d1": 2993.0
+      }
     }
   ]
 }
