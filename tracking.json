@@ -17,6 +17,27 @@
       "day_prices": {
         "d1": 2993.0
       }
+    },
+    {
+      "code": "3612",
+      "name": "ワールド",
+      "entry_date": "2026-08-08",
+      "entry_price": 1606.0,
+      "day_prices": {}
+    },
+    {
+      "code": "3003",
+      "name": "ヒューリック",
+      "entry_date": "2026-08-08",
+      "entry_price": 1739.0,
+      "day_prices": {}
+    },
+    {
+      "code": "7283",
+      "name": "愛三工業",
+      "entry_date": "2026-08-08",
+      "entry_price": 2249.0,
+      "day_prices": {}
     }
   ]
 }
