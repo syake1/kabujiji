@@ -6,7 +6,9 @@
       "entry_date": "2026-08-06",
       "entry_price": 3685.0,
       "day_prices": {
-        "d1": 3655.0
+        "d1": 3655.0,
+        "d2": 3565.0,
+        "d3": 3565.0
       }
     },
     {
@@ -15,7 +17,9 @@
       "entry_date": "2026-08-06",
       "entry_price": 2956.0,
       "day_prices": {
-        "d1": 2993.0
+        "d1": 2993.0,
+        "d2": 3000.0,
+        "d3": 3000.0
       }
     },
     {
@@ -23,21 +27,27 @@
       "name": "ワールド",
       "entry_date": "2026-08-08",
       "entry_price": 1606.0,
-      "day_prices": {}
+      "day_prices": {
+        "d1": 1604.0
+      }
     },
     {
       "code": "3003",
       "name": "ヒューリック",
       "entry_date": "2026-08-08",
       "entry_price": 1739.0,
-      "day_prices": {}
+      "day_prices": {
+        "d1": 1734.5
+      }
     },
     {
       "code": "7283",
       "name": "愛三工業",
       "entry_date": "2026-08-08",
       "entry_price": 2249.0,
-      "day_prices": {}
+      "day_prices": {
+        "d1": 2268.0
+      }
     }
   ]
 }
