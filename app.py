@@ -1484,14 +1484,22 @@ with tab_watch:
             elif sha is None:
                 st.error("GitHubとの接続に失敗しています")
             else:
-                # コードから銘柄名を自動取得
+                # コードから銘柄名を自動取得（Yahoo Finance側が不安定なため3回まで再試行）
+                import time as _time
                 new_name = new_code
-                try:
-                    _tk = yf.Ticker(f"{new_code}.T")
-                    _info = _tk.info
-                    new_name = _info.get('longName') or _info.get('shortName') or new_code
-                except Exception:
-                    pass
+                for _attempt in range(3):
+                    try:
+                        _tk = yf.Ticker(f"{new_code}.T")
+                        _info = _tk.info
+                        _fetched = _info.get('longName') or _info.get('shortName')
+                        if _fetched:
+                            new_name = _fetched
+                            break
+                    except Exception:
+                        pass
+                    _time.sleep(1)
+                if new_name == new_code:
+                    st.warning(f"⚠️ {new_code} の銘柄名取得に失敗したため、コード番号のまま登録します。後で手動修正できます。")
 
                 # 登録時の株価も記録しておく（後で「上がった銘柄」を判定するため）
                 new_price = get_watch_current_price(new_code)
