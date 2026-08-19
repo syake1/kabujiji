@@ -1,3 +1,18 @@
 {
-  "entries": []
+  "entries": [
+    {
+      "code": "8424",
+      "name": "芙蓉総合リース",
+      "entry_date": "2026-08-19",
+      "entry_price": 4352.0,
+      "day_prices": {}
+    },
+    {
+      "code": "7181",
+      "name": "かんぽ生命保険",
+      "entry_date": "2026-08-19",
+      "entry_price": 1632.0,
+      "day_prices": {}
+    }
+  ]
 }
